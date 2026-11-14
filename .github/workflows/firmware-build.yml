@@ -52,6 +52,17 @@ jobs:
       - name: Read ESP-IDF version
         run: echo "IDF_VERSION=$(tr -d '[:space:]' < .idf-version)" >> "$GITHUB_ENV"
 
+      # ccache for the ESP-IDF builds. The esp-idf-ci-action container mounts the
+      # workspace, so CCACHE_DIR in the workspace survives the container. Each run
+      # saves a new cache and restores the newest one for the same ESP-IDF version.
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ env.IDF_VERSION }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.IDF_VERSION }}-
+
       - name: Test authoritative policy state machine
         run: sh tests/run_policy_host_test.sh
 
@@ -126,6 +137,10 @@ jobs:
           esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
+          extra_docker_args: >-
+            -e IDF_CCACHE_ENABLE=1 -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
+          command: ccache --zero-stats && idf.py build
 
       - name: Check API v2 contract and shared dashboard ownership
         run: |
@@ -137,6 +152,9 @@ jobs:
           esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
+          extra_docker_args: >-
+            -e IDF_CCACHE_ENABLE=1 -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
           command: |
             set -e   # a failed idf.py must fail the step, not be masked by the next command
             idf.py -B build-hil-devboard \
@@ -156,6 +174,9 @@ jobs:
           esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
+          extra_docker_args: >-
+            -e IDF_CCACHE_ENABLE=1 -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
           command: |
             set -e
             idf.py -B build-debug-devboard-native \
@@ -163,6 +184,16 @@ jobs:
               -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.debug-devboard-native" \
               build
             sh tests/check_devboard_compileout.sh build-debug-devboard-native
+
+      - name: ccache statistics
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          path: '.'
+          extra_docker_args: >-
+            -e IDF_CCACHE_ENABLE=1 -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
+          command: ccache --show-stats
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

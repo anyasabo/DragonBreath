@@ -7,6 +7,26 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- `GET /metrics`: a Prometheus text-format (0.0.4) endpoint for a direct scrape by
+  Prometheus or VictoriaMetrics. It is open and read-only, like `/api/v2/state`.
+  It reports these values:
+  - sensors, heater demand, relay output, fan, mode, targets and fault state
+  - safety trips by cause, panic-offs and relay on-time
+  - control-tick timing: late ticks, last and maximum duration, maximum interval
+  - heap, and the stack high-water mark and CPU time of each task
+  - uptime, boot count, reset reason, firmware version, Wi-Fi RSSI and HTTP sockets
+
+  The writer uses
+  integer math only and a fixed 15 KB buffer. If the text does not fit, the
+  response is HTTP 500. See `docs/api-v2.md`.
+- `GET /api/v2/state` reports `reset_reason` (the `esp_reset_reason()` of this boot,
+  for example `poweron` or `task_wdt`).
+- The firmware counts boots in NVS (`app_nvs/boot_cnt`).
+- `sdkconfig.defaults` turns on the FreeRTOS trace facility and the run-time
+  stats (64-bit counter) for the per-task metrics. Static DRAM use increases by
+  approximately 1.7 KB.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

@@ -158,6 +158,9 @@ Versioned JSON API — full contract in [`api-v2.md`](api-v2.md):
 
 - `GET /api/v2/info` · `state` · `health` · `logs` · `calibration` — identity,
   authoritative snapshot, diagnostics, event ring, calibration (no side effects).
+- `GET /metrics`: Prometheus text format for a direct scrape (Prometheus or
+  VictoriaMetrics): sensors, control state, safety counters, control-tick timing,
+  heap and per-task stack/CPU. Open, no side effects.
 - `GET /api/v2/events` — Server-Sent Events push (state transitions + telemetry);
   replaces polling.
 - `GET /api/v2/console` — **auth-gated** `text/plain` snapshot of the firmware

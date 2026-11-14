@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "pb_httpd.h"
+#include "pb_httpd_metrics.h"
+#include "pb_metrics.h"
+#include "pb_metrics_fmt.h"
 #include "pb_heater.h"
 #include "pb_ntc.h"
 #include "pb_leds.h"
@@ -128,6 +131,8 @@ static cJSON *state_json(const pb_policy_snapshot_t *s)
     cJSON_AddStringToObject(o, "device_id", s_device_id);
     cJSON_AddStringToObject(o, "boot_id", s_boot_id);
     cJSON_AddStringToObject(o, "firmware", esp_app_get_description()->version);
+    cJSON_AddStringToObject(o, "reset_reason",
+                            pb_metrics_reset_reason_str(pb_metrics_reset_reason()));
     cJSON_AddNumberToObject(o, "state_revision", s->state_revision);
     cJSON_AddStringToObject(o, "mode", pb_policy_mode_str(s->mode));
     cJSON_AddStringToObject(o, "source", pb_policy_source_str(s->source));
@@ -1330,6 +1335,7 @@ esp_err_t pb_httpd_register(httpd_handle_t server)
     httpd_uri_t zonp   = { .uri = "/api/v2/zones",       .method = HTTP_POST, .handler = zones_post };
     httpd_uri_t hmg    = { .uri = "/api/v2/heater_method", .method = HTTP_GET,  .handler = heater_method_get };
     httpd_uri_t hmp    = { .uri = "/api/v2/heater_method", .method = HTTP_POST, .handler = heater_method_post };
+    httpd_uri_t metr   = { .uri = "/metrics",          .method = HTTP_GET,  .handler = pb_httpd_metrics_get };
     httpd_register_uri_handler(s_server, &info);
     httpd_register_uri_handler(s_server, &state);
     httpd_register_uri_handler(s_server, &cmd);
@@ -1350,6 +1356,7 @@ esp_err_t pb_httpd_register(httpd_handle_t server)
     httpd_register_uri_handler(s_server, &zonp);
     httpd_register_uri_handler(s_server, &hmg);
     httpd_register_uri_handler(s_server, &hmp);
+    httpd_register_uri_handler(s_server, &metr);
     ESP_LOGI(TAG, "HTTP API v2 registered (shared portal owns HTTP, provisioning and OTA)");
     return ESP_OK;
 }

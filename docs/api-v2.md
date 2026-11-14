@@ -20,6 +20,8 @@ routes require `X-DragonBreath-Auth`; the device does not enable CORS.
   and when `state_revision` changes. A full `telemetry` snapshot is sent every
   two seconds between transitions. At most two streams are held concurrently.
 - `GET /api/v2/health` — uptime, heap, Wi-Fi RSSI/channel and SSE client count.
+- `GET /metrics`: Prometheus text format 0.0.4 (not versioned). See
+  [Prometheus metrics](#prometheus-metrics).
 - `GET /api/v2/logs` — the in-memory event ring (newest first) as
   `{"api_version":2,"count":N,"entries":[{"ms":<millis since boot>,"text":"…"}]}`.
   Open (read-only, no side effects).
@@ -46,6 +48,7 @@ The complete snapshot, not locally remembered intent, is the source of truth:
   "device_id": "dragonbreath-a1b2c3",
   "boot_id": "4f7f00004f7f00004f7f00004f7f0000",
   "firmware": "0.3.0",
+  "reset_reason": "poweron",
   "state_revision": 12,
   "mode": "power_on",
   "source": "klipper",
@@ -141,6 +144,14 @@ deliberately a v2 route rather than part of the legacy `/settings` surface.
 Temperatures are JSON `null` when their sensor status is not `ok`. Public
 state and SSE snapshots intentionally omit the raw lease ID; only the
 authenticated response that creates a POWER_ON lease returns it.
+`reset_reason` is the `esp_reset_reason()` of this boot as a stable string.
+It does not change until the next boot. The values are:
+
+```text
+unknown poweron ext sw panic int_wdt task_wdt wdt deepsleep
+brownout sdio usb jtag efuse pwr_glitch cpu_lockup
+```
+
 `state_revision` changes only for control, mode, lease, fault, and safety
 transitions; ordinary temperature samples and successful heartbeats do not
 increment it.
@@ -260,6 +271,116 @@ Defined error codes include `invalid_command`, `unsupported_api_version`,
 HTTP 409), and `persist_failed` (an NVS write did not commit). Separately, `busy` is
 the HTTP 503 returned by `GET /api/v2/events` when both SSE slots are already in use —
 a stream-capacity limit, not a command rejection.
+
+## Prometheus metrics
+
+`GET /metrics` returns the device telemetry in the Prometheus text format 0.0.4
+(`Content-Type: text/plain; version=0.0.4`). The route is open and read-only,
+like `GET /api/v2/state`. A scrape does not change device state. Prometheus or
+VictoriaMetrics can scrape the device directly. Use an interval of 15–30 s.
+
+How the device builds the response:
+
+- It copies the policy snapshot once (the same lock as `/api/v2/state`), then
+  reads the other counters with short critical sections.
+- A pure writer (`components/pb_metrics`) formats the text with integer math
+  only. It uses no `%f`, no cJSON and no allocation of its own.
+- The text goes into one fixed buffer of 15 KB (`PB_METRICS_BUF_SIZE`), which
+  is allocated for the request and then released. The worst case (24 tasks,
+  maximum values) is approximately 10.9 KB. A typical response is 7–9 KB.
+- If the text does not fit, or the allocation fails, the response is HTTP 500.
+  The device does not send a partial response.
+
+Rules:
+
+- Temperatures are in °C with one decimal (tenths of a degree).
+- If a sensor status is not `ok`, the temperature sample is not in the
+  response. There is no `NaN`. `dragonbreath_sensor_status` tells the cause.
+- If a value is not known (no filament zone, no Wi-Fi link), the sample is not
+  in the response. The `# HELP` and `# TYPE` lines are always there.
+- Counters (`_total`) start at 0 at each boot, except `dragonbreath_boots_total`.
+- A state set (mode, sensor status) has one sample for each state. The current
+  state is 1, the other states are 0.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `dragonbreath_temperature_celsius` | gauge | `sensor` = `chamber`, `ptc` | Smoothed, calibrated temperature. |
+| `dragonbreath_sensor_status` | gauge | `sensor`; `status` = `ok`, `short`, `open`, `uninit` | Thermistor status (state set). |
+| `dragonbreath_heater_demand` | gauge | | 1 if a target is armed and no fault is latched. |
+| `dragonbreath_heater_relay_on` | gauge | | 1 if the SSR output is on. |
+| `dragonbreath_fan_percent` | gauge | | Effective blower level. |
+| `dragonbreath_mode` | gauge | `mode` = `off`, `power_on`, `auto`, `drying` | Control mode (state set). |
+| `dragonbreath_target_celsius` | gauge | | Effective heater target. 0 when off. |
+| `dragonbreath_zone_target_celsius` | gauge | | Filament-zone target from the control source. No sample if no zone is known. |
+| `dragonbreath_fault_latched` | gauge | | 1 if a safety fault or an inhibit is latched. |
+| `dragonbreath_fault_code` | gauge | | `pb_fault_reason_t` of the latch: 0 none, 1 ptc_overtemp, 2 chamber_overtemp, 3 chamber_sensor, 4 ptc_sensor, 5 link_lost, 6 panic_off, 7 inhibited, 8 emergency, 9 nvs_unreadable. |
+| `dragonbreath_heater_inhibited` | gauge | | 1 if heat is inhibited until reboot. |
+| `dragonbreath_source_connected` | gauge | | 1 if the control-source link is up. |
+| `dragonbreath_safety_trips_total` | counter | `cause` = `ptc_overtemp`, `chamber_overtemp`, `chamber_sensor`, `ptc_sensor`, `link_lost`, `inhibited`, `emergency` | New latches since boot. A trip that stays latched counts once. The boot restore of a persisted latch does not count. |
+| `dragonbreath_panic_offs_total` | counter | | Front-panel panic-off requests since boot. |
+| `dragonbreath_relay_on_seconds_total` | counter | | SSR on-time since boot. |
+| `dragonbreath_control_ticks_total` | counter | | Control-loop iterations since boot (periodic and wake-up). |
+| `dragonbreath_control_ticks_late_total` | counter | | Periodic ticks that started more than 250 ms after the scheduled time. |
+| `dragonbreath_control_tick_duration_microseconds` | gauge | | Duration of the last control tick. |
+| `dragonbreath_control_tick_duration_max_microseconds` | gauge | | Longest control tick since boot. |
+| `dragonbreath_control_tick_interval_max_microseconds` | gauge | | Longest time between the starts of two ticks since boot. The period is 500 ms. |
+| `dragonbreath_heap_free_bytes` | gauge | | Free heap. |
+| `dragonbreath_heap_minimum_free_bytes` | gauge | | Lowest free heap since boot. |
+| `dragonbreath_heap_largest_free_block_bytes` | gauge | | Largest free heap block (8-bit capable). |
+| `dragonbreath_tasks` | gauge | | Number of FreeRTOS tasks. |
+| `dragonbreath_task_stack_free_minimum_bytes` | gauge | `task` | Stack high-water mark: the least free stack since the task started. |
+| `dragonbreath_task_cpu_seconds_total` | counter | `task` | CPU time of the task from the FreeRTOS run-time stats. |
+| `dragonbreath_uptime_seconds` | gauge | | Time since boot. |
+| `dragonbreath_boots_total` | counter | | Boot count in NVS. It increments once at each boot. A factory reset or the Power + Auto reset sets it to 0. |
+| `dragonbreath_reset_reason` | gauge | | `esp_reset_reason()` of this boot as a number. |
+| `dragonbreath_reset_reason_info` | gauge | `reason` | The same reason as a label (the strings of `reset_reason` in `/api/v2/state`). Always 1. |
+| `dragonbreath_build_info` | gauge | `version`, `idf_version` | Firmware and ESP-IDF version. Always 1. |
+| `dragonbreath_wifi_rssi_dbm` | gauge | | RSSI of the station link. No sample if not connected. |
+| `dragonbreath_http_open_sockets` | gauge | | Open client sockets of the HTTP server (`httpd_get_client_list`). |
+| `dragonbreath_metrics_build_duration_microseconds` | gauge | | Time to collect and format the previous `/metrics` response. |
+
+Control-tick timing: the control task records the start and the end of each
+loop with `esp_timer_get_time()`. If a periodic tick starts more than 250 ms
+(half a period) after its scheduled time, it is late. A wake-up by a notification
+(an accepted command or a panic-off) is not a scheduled tick, so it is never
+late. If `dragonbreath_control_ticks_late_total` increases, or the maximum
+interval is much more than 500 ms, other work delays the control loop.
+
+Per-task metrics: the `task` label is the FreeRTOS task name. If two tasks have
+the same name (for example two `db_sse` streams), the second one is `db_sse#2`.
+The response holds a maximum of 24 tasks. `dragonbreath_tasks` gives the full
+count. The CPU share of a task is the rate of its CPU time:
+
+```promql
+rate(dragonbreath_task_cpu_seconds_total[5m])
+```
+
+The single core gives a sum of 1 for all tasks (`IDLE` is the free CPU time).
+A task that stops (an SSE stream) removes its series.
+
+Example scrape configuration (Prometheus, or VictoriaMetrics `vmagent` and
+single-node `-promscrape.config`):
+
+```yaml
+scrape_configs:
+  - job_name: dragonbreath
+    scrape_interval: 15s
+    scrape_timeout: 5s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["dragonbreath.local:80"]   # a static DHCP address is more reliable
+        labels:
+          device: chamber-heater
+```
+
+Example alerts (PromQL):
+
+```promql
+increase(dragonbreath_control_ticks_late_total[10m]) > 0
+dragonbreath_fault_latched == 1
+dragonbreath_reset_reason_info{reason=~"panic|int_wdt|task_wdt|wdt|brownout"}
+min(dragonbreath_task_stack_free_minimum_bytes) < 512
+```
 
 ## Other endpoints (not versioned)
 

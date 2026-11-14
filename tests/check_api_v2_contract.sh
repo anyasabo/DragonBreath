@@ -43,6 +43,20 @@ for capability in power_on auto drying; do
     }
 done
 
+# Boot diagnostics in the public state, and the open Prometheus route.
+grep -q '"reset_reason"' "$httpd" || {
+    echo "state document is missing reset_reason" >&2
+    exit 1
+}
+grep -q '\.uri = "/metrics",.*HTTP_GET' "$httpd" || {
+    echo "missing Prometheus route: GET /metrics" >&2
+    exit 1
+}
+if grep -q 'auth' "$root/components/pb_httpd/pb_httpd_metrics.c"; then
+    echo "GET /metrics must stay open and read-only like /api/v2/state" >&2
+    exit 1
+fi
+
 if grep -Eq '\.uri = "/(status|target|heartbeat|reset)"' "$httpd"; then
     echo "alpha API route was reintroduced" >&2
     exit 1

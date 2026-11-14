@@ -54,6 +54,15 @@ typedef struct {
     pb_heater_constraint_t constraint;
 } pb_heater_telemetry_t;
 
+// Metrics counters since boot. A trip counts once for each new latch episode
+// (a held over-temperature does not count again on each tick). The boot restore
+// of a persisted latch is not counted. Panic-offs count each request.
+typedef struct {
+    uint32_t trips[PB_FAULT__COUNT];   // index: pb_fault_reason_t
+    uint32_t panic_offs;
+    uint64_t relay_on_us;              // total SSR on-time, including the current on period
+} pb_heater_counters_t;
+
 // Chamber-control method. BANGBANG is the v1.1.15 hysteresis on/off drive (the
 // default); PID is the v1.1.16 dc_pid path with the near-target approach cap.
 // Both keep every safety layer (over-temp/sensor/comms trips, local + element
@@ -342,6 +351,9 @@ bool pb_heater_is_inhibited(void);
 
 // True if a safety trip has latched the heater off (needs an explicit clear).
 bool pb_heater_is_faulted(void);
+
+// Read the metrics counters (any task).
+void pb_heater_get_counters(pb_heater_counters_t *out);
 
 // The reason string from the most recent trip (NULL if none / after clear). This
 // is live session detail and is NOT persisted; after a reboot-restored latch it

@@ -101,6 +101,7 @@ typedef struct {
     bool auto_blocked_by_helper;  // AUTO is armed but held off because the Klipper
                                   // [dragonbreath] helper is the active controller
     float auto_bed_threshold_c;
+    float source_target_c;        // filament-zone target from the control source; 0 = none
     pb_policy_params_t params;
 
     bool drying;

@@ -46,3 +46,10 @@ CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 # stops accepting connections (pings fine, HTTP dead) — recovering only when the
 # print stops. 16 gives httpd real concurrency headroom during a print.
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# Per-task telemetry for GET /metrics: stack high-water marks and CPU time from
+# the FreeRTOS run-time stats (ESP timer clock, 1 us). A 64-bit counter does not
+# wrap. A 32-bit counter wraps after 71 minutes.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y

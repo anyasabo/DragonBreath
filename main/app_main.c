@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include <stdbool.h>
@@ -29,6 +30,7 @@
 #include "pb_leds.h"
 #include "pb_buttons.h"
 #include "pb_hil.h"
+#include "pb_metrics.h"
 #include "dc_evlog.h"
 
 #include "esp_mac.h"
@@ -210,6 +212,9 @@ static void control_task(void *arg)
     const TickType_t period = pdMS_TO_TICKS(PB_TICK_PERIOD_MS);
     TickType_t next_deadline = xTaskGetTickCount() + period;
     int dbg = 0;
+    // Metrics: the planned start of this tick if a periodic timeout woke it,
+    // else 0 (first tick, or a wake by notification).
+    int64_t scheduled_us = 0;
 
     // Subscribe this task to the task watchdog so a hung control loop panics
     // (-> reboot -> heater off on boot) rather than silently stalling. Check the
@@ -225,6 +230,7 @@ static void control_task(void *arg)
     }
 
     for (;;) {
+        const int64_t tick_start_us = esp_timer_get_time();
         // Keep source-specific snapshots alive through the status logger below.
         // Previously only the Moonraker snapshot survived that far, so Bambu mode
         // misleadingly rendered zero-initialized Moonraker diagnostics.
@@ -441,7 +447,14 @@ static void control_task(void *arg)
         // period, starving lower-priority tasks — see the invariant above.
         int32_t remaining = (int32_t)(next_deadline - xTaskGetTickCount());
         TickType_t wait = remaining > 0 ? (TickType_t)remaining : 0;
+        // Metrics (no logging, one short critical section): record this tick,
+        // and compute the planned start of the next periodic tick in us.
+        const int64_t tick_end_us = esp_timer_get_time();
+        pb_metrics_tick_record(tick_start_us, tick_end_us, scheduled_us);
+        const int64_t deadline_us =
+            tick_end_us + (int64_t)remaining * portTICK_PERIOD_MS * 1000;
         uint32_t notified = ulTaskNotifyTake(pdTRUE, wait);
+        scheduled_us = notified == 0 ? deadline_us : 0;
         if (notified == 0) {          // periodic timeout: advance one period
             next_deadline += period;
             // Overran (still not ahead of now, e.g. after a long stall): resync
@@ -476,6 +489,7 @@ void app_main(void)
     // tick AND be able to persist a fault that trips during early boot — so a
     // safety trip can never be lost across a reboot for want of an initialized NVS.
     nvs_init();
+    pb_metrics_boot_init();                  // reset reason + persisted boot count
     s_bambu_direct_chamber_control = load_bambu_direct_chamber_control();
     ESP_LOGI(TAG, "Bambu direct chamber control: %s",
              s_bambu_direct_chamber_control ? "enabled" : "disabled");

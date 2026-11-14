@@ -1256,6 +1256,7 @@ void pb_policy_get_snapshot(pb_policy_snapshot_t *out)
     out->klipper_helper_present = s.klipper_helper_present;
     out->auto_blocked_by_helper = (s.mode == PB_MODE_AUTO && s.klipper_helper_present);
     out->auto_bed_threshold_c = s.auto_bed_threshold_c;
+    out->source_target_c = s.src_target_c;
     out->params = s.params;
     out->drying = s.mode == PB_MODE_DRYING;
     if (out->drying && s.drying_deadline_us > now) {

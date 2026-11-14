@@ -7,6 +7,11 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Security
+- Builds use ESP-IDF v5.3.6 (was v5.3.5). It fixes an out-of-bounds read in the
+  lwIP DHCP server that the setup access point uses. A crafted DHCP packet can
+  crash the device.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

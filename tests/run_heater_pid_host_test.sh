@@ -13,7 +13,7 @@ mkdir -p "$tmp/include"
 curl -fsSL "$base/include/dc_pid.h" -o "$tmp/include/dc_pid.h"
 curl -fsSL "$base/dc_pid.c" -o "$tmp/dc_pid.c"
 
-cc -std=c11 -Wall -Wextra -Werror \
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror ${HOST_TEST_CFLAGS:-} \
   -I"$root/components/pb_heater/include" \
   -I"$root/tests/stubs" \
   -I"$tmp/include" \

@@ -6,7 +6,7 @@ out="${TMPDIR:-/tmp}/dragonbreath-pb-klipper-mqtt-test"
 
 # db_klipper_mqtt_arm.h is pure (only libc), so no ESP stubs are needed — just its
 # include dir for the header under test.
-cc -std=c11 -Wall -Wextra -Werror \
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror ${HOST_TEST_CFLAGS:-} \
   -I"$root/components/db_klipper_mqtt/include" \
   "$root/tests/db_klipper_mqtt_host_test.c" \
   -o "$out"

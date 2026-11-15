@@ -448,8 +448,9 @@ static void device_reset(const fuzz_knobs_t *k)
     if (k->device[0] & 0x01) fuzz_nvs_put_str("ctl_token", "fuzz-token");
 
     // State of pb_httpd.c from earlier inputs.
-    memset(s_replay, 0, sizeof s_replay);
-    s_replay_next = 0;
+    for (size_t i = 0; i < PB_REPLAY_ENTRIES; i++) s_replay.free_fn(s_replay.e[i].response);
+    memset(s_replay.e, 0, sizeof s_replay.e);
+    s_replay.next = 0;
     s_sse_clients = 0;
 
     pb_policy_init();

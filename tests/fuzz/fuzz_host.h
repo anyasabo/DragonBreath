@@ -77,8 +77,9 @@ const fuzz_route_t *fuzz_find_route(httpd_method_t method, const char *uri);
 // "GET /api/v2/info". A missing route makes a fuzzer that tests nothing.
 void fuzz_check_routes(const char *const *routes, size_t count);
 
-// The most time that one request can hold the httpd task: the time that the
-// task waits for the client in recv(), for the headers, the body and the purge.
+// The most time that one body read can hold the httpd task: the time that the
+// task waits for the client in recv() for the body. The fakes do not model the
+// header read or slow sends, so this bound does not cover them.
 // A body read (pb_httpd and dc_portal) checks its 10 s deadline before each
 // recv(), and one recv() waits at most 3 s (db_portal_start()). Thus a body
 // read stops after about 13 s. The bound has 2 s of margin.

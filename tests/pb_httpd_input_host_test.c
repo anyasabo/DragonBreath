@@ -95,6 +95,8 @@ int main(void)
     CHECK(strcmp(pb_httpd_settings_parse("max=60&first_heat_rerun=0", &s), "bad first_heat_rerun") == 0);
     CHECK(strcmp(pb_httpd_settings_parse("max=60&first_heat_apply_swap=2", &s),
                  "bad first_heat_apply_swap") == 0);
+    CHECK(strcmp(pb_httpd_settings_parse("swap_thermistors=0&first_heat_apply_swap=1", &s),
+                 "swap_thermistors and first_heat_apply_swap together") == 0);
 
     // No known field.
     CHECK(pb_httpd_settings_parse("other=1", &s) == NULL);

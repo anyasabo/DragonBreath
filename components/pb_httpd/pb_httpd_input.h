@@ -110,6 +110,9 @@ static inline const char *pb_httpd_settings_parse(const char *q, pb_httpd_settin
         if (!pb_httpd_parse_u32(v, &u) || u != 1) return "bad first_heat_rerun";
         s->has_first_heat_rerun = true;
     }
+    // Both fields write the staged thermistor mapping. One request must not set it twice.
+    if (s->has_swap && s->has_first_heat_apply_swap)
+        return "swap_thermistors and first_heat_apply_swap together";
     return NULL;
 }
 

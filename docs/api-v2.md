@@ -652,7 +652,8 @@ These predate/sit beside the versioned control surface and are stable:
   the opposite of the active mapping. Check the plugs first. If the chamber and
   PTC plugs are crossed, the swap is right. A `wrong_roles` result can also
   mean a PTC sensor that is not on the element. A swap does not repair that. The
-  swap applies after a reboot. The reboot also resets the stored result, so the
+  swap applies after a reboot. A request with both `swap_thermistors` and
+  `first_heat_apply_swap` gets HTTP 400. The reboot also resets the stored result, so the
   next heat checks the new mapping. Without a stored `wrong_roles` result the
   response is HTTP 409 and no field changes. The firmware never applies a swap
   by itself.

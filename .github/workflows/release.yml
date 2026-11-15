@@ -69,6 +69,9 @@ jobs:
             pip install --quiet esp-idf-sbom==1.5.0
             esp-idf-sbom create --rem-unused -o build/dragonbreath.spdx build/project_description.json
 
+      - name: Check that the release enforces the first-heat check
+        run: sh tests/check_first_heat_enforced.sh build
+
       - name: Package release artifacts
         env:
           VERSION: ${{ steps.ver.outputs.version }}

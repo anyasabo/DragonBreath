@@ -95,6 +95,13 @@ Defense-in-depth — see [`SAFETY.md`](SAFETY.md) for the full model.
   chamber/PTC safety roles. The selection is saved immediately but activated
   only at boot; reboot after changing it. Use only after confirming the channels
   are crossed.
+- **First-heat check:** on each boot until a pass is stored, the first heat
+  checks that the PTC reading rises and the chamber reading does not lead it.
+  A "wrong roles" or "no-rise" result latches the heater off (clear it like any
+  fault). "Wrong roles" means crossed plugs or a PTC sensor that is not on the
+  element. Check the plugs first. If they are crossed, `first_heat_apply_swap=1`
+  stages the swap. `first_heat_rerun=1` runs the check again. The firmware never
+  swaps by itself. See [`SAFETY.md`](SAFETY.md).
 
 Exposed via `GET`/`POST /settings` and the web UI's Settings cards. The fixed
 over-temp cutoffs are not settable.

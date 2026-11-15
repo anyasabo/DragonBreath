@@ -268,6 +268,9 @@ jobs:
         run: |
           sh tests/check_api_v2_contract.sh
 
+      - name: Check that the production build enforces the first-heat check
+        run: sh tests/check_first_heat_enforced.sh build
+
       - name: Build safe dev-board HIL profile (ESP-IDF ${{ env.IDF_VERSION }})
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:

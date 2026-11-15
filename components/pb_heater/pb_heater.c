@@ -64,6 +64,33 @@ static uint8_t     s_method;            // guarded by s_mux — pb_heater_method
 static bool        s_heat_intent;       // control-task only — bang-bang chamber hysteresis latch
                                         // (PB_HEATER_HYSTERESIS_C band, defined in pb_heater.h)
 
+// First-heat check (see pb_heater.h). The window state is control-task only;
+// pb_heater_load_first_heat() also writes it, before the control task starts.
+static pb_fh_state_t s_fh;
+static int64_t     s_fh_t0_us, s_fh_last_us, s_fh_on_us;
+static int32_t     s_fh_ptc0, s_fh_ch0;            // start readings, tenths
+static int32_t     s_fh_ptc_first[2], s_fh_ch_first[2];   // first two readings of the window
+static uint8_t     s_fh_nstart;                    // readings taken for the start (0..3)
+static int32_t     s_fh_ptc_prev, s_fh_ch_prev;    // last readings, for the glitch filter
+static int32_t     s_fh_ptc_peak, s_fh_ch_peak;
+static int32_t     s_fh_ptc_rise, s_fh_ch_rise;
+static uint32_t    s_fh_cfg;                       // mapping fingerprint at the start
+static int64_t     s_fh_retry_us;
+static uint32_t    s_fh_restarts, s_fh_skipped;    // published counters (this boot)
+static uint32_t    s_fh_uncertain_streak;          // consecutive UNCERTAIN results (this boot)
+static bool        s_fh_store_warned;              // under the persist lock: log one failure only
+// Guarded by s_mux: the published snapshot, the re-run request and the NVS write
+// that is requested or pending (the tick retries it).
+static pb_heater_first_heat_t s_fh_pub;
+static bool        s_fh_rerun_req;
+static bool        s_fh_store_pending;
+static uint32_t    s_fh_store_seq;
+static uint8_t     s_fh_store_val;
+static int32_t     s_fh_store_ptc, s_fh_store_ch;
+static uint32_t    s_fh_store_cfg;
+
+#define FH_ENFORCED (PB_FH_ENFORCED != 0)   // see pb_heater.h: dev board or REPORT_ONLY
+
 // Persisted settings live in the shared app_nvs namespace (centi-°C / ms u32).
 #define NVS_NS             "app_nvs"
 #define KEY_HEAT_MAX_C     "heat_max_c"      // u32 centi-°C
@@ -73,6 +100,11 @@ static bool        s_heat_intent;       // control-task only — bang-bang chamb
 #define KEY_HEAT_METHOD    "heat_method"     // u8 pb_heater_method_t (0=bangbang default, 1=pid)
 #define KEY_FAULT_LATCH    "fault_latch"     // u8 0/1 — persisted safety-fault latch
 #define KEY_FAULT_CODE     "fault_code"      // u8 pb_fault_reason_t
+#define KEY_FH_STATE       "fh_state"        // u8 pb_fh_stored_t — first-heat result
+#define KEY_FH_PTC         "fh_ptc_dc"       // i32 tenths — measured PTC rise
+#define KEY_FH_CH          "fh_ch_dc"        // i32 tenths — measured chamber rise
+#define KEY_FH_CFG         "fh_cfg"          // u32 — mapping fingerprint of the result
+#define KEY_STOCK_NTC_BIT  "ntc_bit"         // stock firmware: 4-byte blob, 0/1/2 (hint only)
 
 // Canonical, stable strings for each fault code (index == code). Kept identical to
 // the historical trip strings so the API contract doesn't change for existing
@@ -88,6 +120,8 @@ static const char *const k_fault_str[PB_FAULT__COUNT] = {
     [PB_FAULT_INHIBITED]        = "inhibited",
     [PB_FAULT_EMERGENCY]        = "safety trip",
     [PB_FAULT_NVS_UNREADABLE]   = "persisted fault state unreadable",
+    [PB_FAULT_HEATER_NO_RISE]   = "heater no-rise (first-heat check)",
+    [PB_FAULT_SENSOR_ROLES]  = "sensor roles wrong or PTC sensor not on element (first-heat check)",
 };
 
 const char *pb_heater_fault_str(pb_fault_reason_t code)
@@ -192,7 +226,13 @@ esp_err_t pb_heater_init(void)
     s_comms_timeout_us = (int64_t)PB_HEATER_COMMS_TIMEOUT_MS_DEFAULT * 1000;
     s_cool_release_c = PB_HEATER_COOL_RELEASE_C_DEFAULT;
     s_fb_cut_c = 0.0f;   // auto (per-Rref default) until a user override is loaded/set
+    s_fh_pub = (pb_heater_first_heat_t){ .state = PB_FH_IDLE, .enforced = FH_ENFORCED };
+    s_fh_rerun_req = false;
+    s_fh_store_pending = false;
     taskEXIT_CRITICAL(&s_mux);
+    s_fh = PB_FH_IDLE;   // pb_heater_load_first_heat() restores a stored pass
+    s_fh_nstart = 0;
+    s_fh_restarts = s_fh_skipped = s_fh_uncertain_streak = 0;
 #ifdef CONFIG_PB_DEVBOARD_SAFE
     ESP_LOGW(TAG, "safe dev-board backend: relay GPIO compiled out");
 #else
@@ -679,6 +719,384 @@ void pb_heater_load_fault(void)
     }
 }
 
+// --- First-heat check ------------------------------------------------------------
+
+const char *pb_heater_first_heat_state_str(pb_fh_state_t s)
+{
+    switch (s) {
+    case PB_FH_IDLE:    return "idle";
+    case PB_FH_ARMED:   return "armed";
+    case PB_FH_EVAL:    return "eval";
+    case PB_FH_PASS:    return "pass";
+    case PB_FH_WRONG_ROLES: return "wrong_roles";
+    case PB_FH_NO_RISE: return "no_rise";
+    case PB_FH_UNCERTAIN: return "uncertain";
+    default:            return "unknown";
+    }
+}
+
+const char *pb_heater_first_heat_stored_str(pb_fh_stored_t s)
+{
+    switch (s) {
+    case PB_FH_STORED_PASS:    return "pass";
+    case PB_FH_STORED_WRONG_ROLES: return "wrong_roles";
+    case PB_FH_STORED_NO_RISE: return "no_rise";
+    default:                   return "unknown";
+    }
+}
+
+const char *pb_heater_first_heat_stock_str(pb_fh_stock_hint_t h)
+{
+    switch (h) {
+    case PB_FH_STOCK_NONE:    return "none";
+    case PB_FH_STOCK_UNKNOWN: return "unknown";
+    case PB_FH_STOCK_CROSSED: return "crossed";
+    case PB_FH_STOCK_NORMAL:  return "normal";
+    default:                  return "invalid";
+    }
+}
+
+// The thermistor mapping and the offsets (centi-degrees) that a stored result is
+// valid for. A change of either makes the stored result UNKNOWN at the next boot.
+static uint32_t fh_cfg_now(void)
+{
+    float oc = pb_ntc_get_offset_c(PB_NTC_CHAMBER), op = pb_ntc_get_offset_c(PB_NTC_PTC);
+    int32_t c = (int32_t)(oc * 100.0f + (oc >= 0.0f ? 0.5f : -0.5f));
+    int32_t p = (int32_t)(op * 100.0f + (op >= 0.0f ? 0.5f : -0.5f));
+    if (c < -511) c = -511;
+    if (c > 511) c = 511;
+    if (p < -511) p = -511;
+    if (p > 511) p = 511;
+    return 0x80000000u | (pb_ntc_get_swap_thermistors_active() ? 1u : 0u) |
+           ((uint32_t)(c + 512) << 1) | ((uint32_t)(p + 512) << 11);
+}
+
+static int32_t clamp_dc(int32_t v) { return v < -3000 ? -3000 : (v > 3000 ? 3000 : v); }
+
+// Request an NVS write of the result. Caller holds s_mux.
+static void fh_request_store_locked(pb_fh_stored_t val, int32_t ptc, int32_t ch, uint32_t cfg)
+{
+    s_fh_store_val = (uint8_t)val;
+    s_fh_store_ptc = ptc;
+    s_fh_store_ch = ch;
+    s_fh_store_cfg = cfg;
+    s_fh_store_seq++;
+    s_fh_store_pending = true;
+    s_fh_pub.stored = val;
+}
+
+// Write a pending result to NVS under the persist lock. The state key goes to
+// UNKNOWN first and gets its value last, so a failure part way never leaves an
+// old PASS with new data: the next boot runs the check again (fail-closed).
+// wait=false (control task): returns ESP_ERR_TIMEOUT if another task holds the lock.
+static esp_err_t fh_store(bool wait)
+{
+    if (s_persist_lock && xSemaphoreTake(s_persist_lock, wait ? portMAX_DELAY : 0) != pdTRUE)
+        return ESP_ERR_TIMEOUT;
+    taskENTER_CRITICAL(&s_mux);
+    bool pending = s_fh_store_pending;
+    uint32_t seq = s_fh_store_seq;
+    uint8_t val = s_fh_store_val;
+    int32_t ptc = s_fh_store_ptc, ch = s_fh_store_ch;
+    uint32_t cfg = s_fh_store_cfg;
+    taskEXIT_CRITICAL(&s_mux);
+    esp_err_t err = ESP_OK;
+    if (pending) {
+        nvs_handle_t h;
+        err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+        if (err == ESP_OK) {
+            err = nvs_set_u8(h, KEY_FH_STATE, PB_FH_STORED_UNKNOWN);
+            if (err == ESP_OK && val != PB_FH_STORED_UNKNOWN) {
+                err = nvs_set_i32(h, KEY_FH_PTC, ptc);
+                if (err == ESP_OK) err = nvs_set_i32(h, KEY_FH_CH, ch);
+                if (err == ESP_OK) err = nvs_set_u32(h, KEY_FH_CFG, cfg);
+                if (err == ESP_OK) err = nvs_set_u8(h, KEY_FH_STATE, val);
+            }
+            if (err == ESP_OK) err = nvs_commit(h);
+            nvs_close(h);
+        }
+        if (err == ESP_OK) {
+            taskENTER_CRITICAL(&s_mux);
+            if (s_fh_store_seq == seq) s_fh_store_pending = false;   // no newer request
+            taskEXIT_CRITICAL(&s_mux);
+        }
+    }
+    bool warn = err != ESP_OK && !s_fh_store_warned;
+    s_fh_store_warned = err != ESP_OK;
+    if (s_persist_lock) xSemaphoreGive(s_persist_lock);
+    if (warn) ESP_LOGW(TAG, "first-heat result not saved (will retry): %s", esp_err_to_name(err));
+    return err;
+}
+
+// Read the stock app_nvs/ntc_bit. Stock writes a 4-byte blob. Other types and
+// sizes are checked too, so a value of another layout gives INVALID, not a guess.
+static pb_fh_stock_hint_t fh_read_stock(nvs_handle_t h)
+{
+    uint32_t v = 0;
+    size_t len = 0;
+    esp_err_t e = nvs_get_blob(h, KEY_STOCK_NTC_BIT, NULL, &len);
+    if (e == ESP_OK) {
+        uint8_t b[4] = {0};
+        size_t got = len;
+        if (len < 1 || len > sizeof b) return PB_FH_STOCK_INVALID;
+        if (nvs_get_blob(h, KEY_STOCK_NTC_BIT, b, &got) != ESP_OK || got != len)
+            return PB_FH_STOCK_INVALID;
+        v = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    } else if (e != ESP_ERR_NVS_NOT_FOUND) {
+        return PB_FH_STOCK_INVALID;
+    } else {
+        uint8_t u8;
+        int32_t i32;
+        uint32_t u32;
+        if (nvs_get_u8(h, KEY_STOCK_NTC_BIT, &u8) == ESP_OK)        v = u8;
+        else if (nvs_get_i32(h, KEY_STOCK_NTC_BIT, &i32) == ESP_OK) v = (uint32_t)i32;
+        else if (nvs_get_u32(h, KEY_STOCK_NTC_BIT, &u32) == ESP_OK) v = u32;
+        else return PB_FH_STOCK_NONE;
+    }
+    switch (v) {
+    case 0:  return PB_FH_STOCK_UNKNOWN;
+    case 1:  return PB_FH_STOCK_CROSSED;
+    case 2:  return PB_FH_STOCK_NORMAL;
+    default: return PB_FH_STOCK_INVALID;
+    }
+}
+
+void pb_heater_load_first_heat(void)
+{
+    uint8_t st = PB_FH_STORED_UNKNOWN;
+    int32_t ptc = 0, ch = 0;
+    uint32_t cfg = 0;
+    bool st_ok = false, cfg_ok = false;
+    pb_fh_stock_hint_t hint = PB_FH_STOCK_NONE;
+    nvs_handle_t h;
+    esp_err_t oe = nvs_open(NVS_NS, NVS_READONLY, &h);
+    if (oe == ESP_OK) {
+        st_ok = nvs_get_u8(h, KEY_FH_STATE, &st) == ESP_OK;
+        cfg_ok = nvs_get_u32(h, KEY_FH_CFG, &cfg) == ESP_OK;
+        if (nvs_get_i32(h, KEY_FH_PTC, &ptc) != ESP_OK) ptc = 0;
+        if (nvs_get_i32(h, KEY_FH_CH, &ch) != ESP_OK) ch = 0;
+        hint = fh_read_stock(h);
+        nvs_close(h);
+    } else if (oe != ESP_ERR_NVS_NOT_FOUND) {
+        hint = PB_FH_STOCK_INVALID;
+    }
+    // A read error, an unknown value or another mapping: UNKNOWN (run the check).
+    pb_fh_stored_t stored = PB_FH_STORED_UNKNOWN;
+    bool stale = false;
+    if (st_ok && st >= PB_FH_STORED_PASS && st <= PB_FH_STORED_NO_RISE) {
+        if (cfg_ok && cfg == fh_cfg_now()) stored = (pb_fh_stored_t)st;
+        else stale = true;
+    }
+    if (stored == PB_FH_STORED_UNKNOWN) ptc = ch = 0;
+    // A stored failure is shown by `stored` and by the restored fault latch. The
+    // session starts IDLE, so the next heat after the clear runs the check.
+    s_fh = stored == PB_FH_STORED_PASS ? PB_FH_PASS : PB_FH_IDLE;
+    s_fh_ptc_rise = clamp_dc(ptc);
+    s_fh_ch_rise = clamp_dc(ch);
+    taskENTER_CRITICAL(&s_mux);
+    s_fh_pub.state = s_fh;
+    s_fh_pub.stored = stored;
+    s_fh_pub.stock_hint = hint;
+    s_fh_pub.ptc_rise_dc = s_fh_ptc_rise;
+    s_fh_pub.ch_rise_dc = s_fh_ch_rise;
+    s_fh_pub.on_ms = 0;
+    if (stale) fh_request_store_locked(PB_FH_STORED_UNKNOWN, 0, 0, 0);
+    taskEXIT_CRITICAL(&s_mux);
+    if (stale) (void)fh_store(true);   // forget a result of another mapping (retried if it fails)
+    ESP_LOGI(TAG, "first-heat: stored=%s%s stock_hint=%s", pb_heater_first_heat_stored_str(stored),
+             stale ? " (reset: mapping or offsets changed)" : "", pb_heater_first_heat_stock_str(hint));
+}
+
+void pb_heater_get_first_heat(pb_heater_first_heat_t *out)
+{
+    if (!out) return;
+    taskENTER_CRITICAL(&s_mux);
+    *out = s_fh_pub;
+    taskEXIT_CRITICAL(&s_mux);
+}
+
+esp_err_t pb_heater_first_heat_rerun(void)
+{
+    taskENTER_CRITICAL(&s_mux);
+    s_fh_rerun_req = true;
+    fh_request_store_locked(PB_FH_STORED_UNKNOWN, 0, 0, 0);
+    taskEXIT_CRITICAL(&s_mux);
+    esp_err_t err = fh_store(true);
+    ESP_LOGI(TAG, "first-heat: re-run requested");
+    return err;
+}
+
+static void fh_publish(void)   // control task
+{
+    taskENTER_CRITICAL(&s_mux);
+    s_fh_pub.state = s_fh;
+    s_fh_pub.ptc_rise_dc = s_fh_ptc_rise;
+    s_fh_pub.ch_rise_dc = s_fh_ch_rise;
+    s_fh_pub.on_ms = s_fh_on_us >= (int64_t)UINT32_MAX * 1000 ? UINT32_MAX
+                                                               : (uint32_t)(s_fh_on_us / 1000);
+    s_fh_pub.restarts = s_fh_restarts;
+    s_fh_pub.skipped = s_fh_skipped;
+    s_fh_pub.uncertain_streak = s_fh_uncertain_streak;
+    taskEXIT_CRITICAL(&s_mux);
+}
+
+static bool fh_window_open(void) { return s_fh == PB_FH_ARMED || s_fh == PB_FH_EVAL; }
+
+// A trip, a fault latch or a stop closes an open window without a result.
+static void fh_abort(const char *why)
+{
+    (void)why;                       // unused if logging is compiled out
+    if (!fh_window_open()) return;
+    s_fh = PB_FH_IDLE;
+    fh_publish();
+    ESP_LOGI(TAG, "first-heat: window aborted (%s)", why);
+}
+
+// Call only while no fault is latched. A failed result stays while its latch
+// holds. After the clear the check goes back to IDLE, so the next heat runs it
+// again, also if the clear and a new target come before the next tick. A result
+// without a latch (UNCERTAIN, or any fail in report-only mode) stays until the
+// heat stops.
+static void fh_release_fail(bool armed)
+{
+    bool fail = s_fh == PB_FH_WRONG_ROLES || s_fh == PB_FH_NO_RISE;
+    if ((fail && (FH_ENFORCED || !armed)) || (s_fh == PB_FH_UNCERTAIN && !armed)) {
+        s_fh = PB_FH_IDLE;
+        fh_publish();
+    }
+}
+
+// Close an open window without a result, count it as a restart. The next relay
+// OFF->ON edge opens a new one.
+static void fh_restart(const char *why)
+{
+    (void)why;                       // unused if logging is compiled out
+    s_fh = PB_FH_IDLE;
+    s_fh_restarts++;
+    fh_publish();
+    ESP_LOGI(TAG, "first-heat: window closed without a result (%s)", why);
+}
+
+// One step of an open window with valid readings. Latches a failed result
+// itself (through trip()) and returns its fault code, or PB_FAULT_NONE.
+static pb_fault_reason_t fh_step(float ptc_c, float ch_c, int64_t now)
+{
+    if (!fh_window_open()) return PB_FAULT_NONE;
+    if (fh_cfg_now() != s_fh_cfg) {  // an offset changed: the readings moved
+        fh_restart("offset changed");
+        return PB_FAULT_NONE;
+    }
+    int64_t dt = now - s_fh_last_us;
+    if (s_on && dt > 0) s_fh_on_us += dt;      // the relay was on since the last tick
+    s_fh_last_us = now;
+    int32_t p = pb_heater_c_to_dc(ptc_c), c = pb_heater_c_to_dc(ch_c);
+    if (s_fh_nstart < 3) {
+        // The start reading is the median of the first three readings.
+        if (s_fh_nstart < 2) {
+            s_fh_ptc_first[s_fh_nstart] = p;
+            s_fh_ch_first[s_fh_nstart] = c;
+            s_fh_nstart++;
+            fh_publish();
+            return PB_FAULT_NONE;
+        }
+        s_fh_ptc0 = pb_heater_median3(s_fh_ptc_first[0], s_fh_ptc_first[1], p);
+        s_fh_ch0 = pb_heater_median3(s_fh_ch_first[0], s_fh_ch_first[1], c);
+        s_fh_ptc_peak = s_fh_ptc0;
+        s_fh_ch_peak = s_fh_ch0;
+        s_fh_ptc_prev = s_fh_ptc_first[1];
+        s_fh_ch_prev = s_fh_ch_first[1];
+        s_fh_nstart = 3;
+    }
+    // Peak of min(this, last) reading: one glitch sample does not make a rise.
+    int32_t pf = p < s_fh_ptc_prev ? p : s_fh_ptc_prev;
+    int32_t cf = c < s_fh_ch_prev ? c : s_fh_ch_prev;
+    s_fh_ptc_prev = p;
+    s_fh_ch_prev = c;
+    if (pf > s_fh_ptc_peak) s_fh_ptc_peak = pf;
+    if (cf > s_fh_ch_peak) s_fh_ch_peak = cf;
+    s_fh_ptc_rise = s_fh_ptc_peak - s_fh_ptc0;
+    s_fh_ch_rise = s_fh_ch_peak - s_fh_ch0;
+    uint32_t on_ms = s_fh_on_us >= (int64_t)UINT32_MAX * 1000 ? UINT32_MAX
+                                                              : (uint32_t)(s_fh_on_us / 1000);
+    int64_t wall_us = now - s_fh_t0_us;
+    uint32_t wall_ms = wall_us >= (int64_t)UINT32_MAX * 1000 ? UINT32_MAX : (uint32_t)(wall_us / 1000);
+    pb_fh_eval_t e = pb_heater_first_heat_eval(on_ms, wall_ms, s_fh_ptc_rise, s_fh_ch_rise);
+    pb_fault_reason_t code = PB_FAULT_NONE;
+    pb_fh_stored_t store = PB_FH_STORED_UNKNOWN;
+    switch (e) {
+    case PB_FH_EVAL_PASS:
+        s_fh = PB_FH_PASS;
+        store = PB_FH_STORED_PASS;
+        break;
+    case PB_FH_EVAL_WRONG_ROLES:
+        s_fh = PB_FH_WRONG_ROLES;
+        store = PB_FH_STORED_WRONG_ROLES;
+        code = PB_FAULT_SENSOR_ROLES;
+        break;
+    case PB_FH_EVAL_NO_RISE:
+        s_fh = PB_FH_NO_RISE;
+        store = PB_FH_STORED_NO_RISE;
+        code = PB_FAULT_HEATER_NO_RISE;
+        break;
+    case PB_FH_EVAL_UNCERTAIN:
+        s_fh = PB_FH_UNCERTAIN;      // report only: no latch, nothing stored
+        break;
+    default:
+        if (wall_ms > PB_FH_MAX_WALL_MS) {
+            fh_restart("too little ON time");
+            return PB_FAULT_NONE;
+        }
+        if (s_fh == PB_FH_ARMED && on_ms >= PB_FH_MIN_ON_MS) s_fh = PB_FH_EVAL;
+        break;
+    }
+    if (e == PB_FH_EVAL_UNCERTAIN) s_fh_uncertain_streak++;        // a repeat stays visible
+    else if (e != PB_FH_EVAL_WAIT) s_fh_uncertain_streak = 0;
+    fh_publish();
+    if (e == PB_FH_EVAL_WAIT) return PB_FAULT_NONE;
+    ESP_LOGW(TAG, "first-heat: %s after %u ms ON: PTC rise %d dC, chamber rise %d dC%s",
+             pb_heater_first_heat_state_str(s_fh), (unsigned)on_ms,
+             (int)s_fh_ptc_rise, (int)s_fh_ch_rise,
+             FH_ENFORCED ? "" : " (report only)");
+    if (!FH_ENFORCED || e == PB_FH_EVAL_UNCERTAIN) return PB_FAULT_NONE;
+    if (code != PB_FAULT_NONE) trip(code);     // relay off first, then the NVS record
+    // A re-run that arrived during this tick wins: it already wrote UNKNOWN, and
+    // the next tick closes this result. Do not store over it.
+    taskENTER_CRITICAL(&s_mux);
+    bool rerun = s_fh_rerun_req;
+    if (!rerun) fh_request_store_locked(store, s_fh_ptc_rise, s_fh_ch_rise, s_fh_cfg);
+    taskEXIT_CRITICAL(&s_mux);
+    if (!rerun) {
+        s_fh_retry_us = now;
+        (void)fh_store(false);       // the tick retries a failed or contended write
+    }
+    return code;
+}
+
+// After the drive decision: a relay OFF->ON edge opens a window, unless the
+// element is already warm (it can be at its equilibrium and cannot rise).
+static void fh_after_drive(bool drive, bool was_on, float ptc_c, float ch_c, int64_t now)
+{
+    if (s_fh != PB_FH_IDLE || !drive || was_on) return;
+    int32_t p = pb_heater_c_to_dc(ptc_c), c = pb_heater_c_to_dc(ch_c);
+    if (pb_heater_first_heat_warm(p, c)) {
+        s_fh_skipped++;
+        fh_publish();
+        return;
+    }
+    s_fh = PB_FH_ARMED;
+    s_fh_t0_us = s_fh_last_us = now;
+    s_fh_on_us = 0;
+    s_fh_ptc_first[0] = p;
+    s_fh_ch_first[0] = c;
+    s_fh_nstart = 1;
+    s_fh_ptc0 = s_fh_ptc_peak = p;
+    s_fh_ch0 = s_fh_ch_peak = c;
+    s_fh_ptc_rise = s_fh_ch_rise = 0;
+    s_fh_cfg = fh_cfg_now();
+    fh_publish();
+    ESP_LOGI(TAG, "first-heat: window open (PTC %d dC, chamber %d dC)", (int)p, (int)c);
+}
+
 bool pb_heater_heat_mode(void)     // "armed and not tripped" (independent of SSR cycling)
 {
     taskENTER_CRITICAL(&s_mux);
@@ -720,6 +1138,28 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
         }
     }
 
+    // First-heat: a re-run request from another task, and the retry of a result
+    // write that failed (throttled like the fault persist retry).
+    bool fh_rerun, fh_pending;
+    taskENTER_CRITICAL(&s_mux);
+    fh_rerun = s_fh_rerun_req;
+    s_fh_rerun_req = false;
+    fh_pending = s_fh_store_pending;
+    taskEXIT_CRITICAL(&s_mux);
+    if (fh_rerun && (s_fh == PB_FH_PASS || s_fh == PB_FH_UNCERTAIN || fh_window_open())) {
+        s_fh = PB_FH_IDLE;               // a failed result waits for its clear
+        s_fh_on_us = 0;
+        s_fh_ptc_rise = s_fh_ch_rise = 0;
+        fh_publish();
+    }
+    if (fh_pending) {
+        int64_t now = esp_timer_get_time();
+        if (now - s_fh_retry_us >= 2000000) {
+            s_fh_retry_us = now;
+            (void)fh_store(false);
+        }
+    }
+
     float   target;
     float   control_chamber_c;
     bool    latched;
@@ -751,6 +1191,7 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
         ps == PB_NTC_OK, ptc_c, cs == PB_NTC_OK, chamber_c, armed,
         (esp_timer_get_time() - last_link) > comms_timeout_us);
     if (trip_code != PB_FAULT_NONE) {
+        fh_abort("safety trip");     // the hazard trip wins over the first-heat check
         trip(trip_code);
         return;
     }
@@ -762,10 +1203,18 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
         s_fb_cut      = false;   // arm starts clean rather than mid-cycle
         s_local_cut   = false;
         telemetry_set(0.0f, 0.0f, PB_HEATER_CONSTRAINT_OFF);
+        fh_abort(latched ? "fault latched" : "heat stopped");
+        if (!latched) fh_release_fail(false);
         return;
     }
 
     // Here: armed && !latched && cs==OK && ps==OK.
+    // First-heat check: it can only latch the heater off, through the same trip
+    // path as the hazard checks above (see pb_heater.h).
+    const int64_t now_us = esp_timer_get_time();
+    fh_release_fail(true);
+    if (fh_step(ptc_c, chamber_c, now_us) != PB_FAULT_NONE) return;   // latched in fh_step
+
     // Step 1 — select the process variable. Policy supplies a finite external value
     // only for AUTO mode with fresh Bambu telemetry and the persisted preference on;
     // NAN means use DragonBreath's local chamber NTC. Both sources feed this same PID
@@ -823,7 +1272,9 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
         else if (s_local_cut)            bb_constraint = PB_HEATER_CONSTRAINT_LOCAL_FOLDBACK;
         else if (regulation_c >= target) bb_constraint = PB_HEATER_CONSTRAINT_TARGET_REACHED;
         telemetry_set(bb_drive ? 1.0f : 0.0f, 1.0f, bb_constraint);
+        const bool bb_was_on = s_on;
         if (bb_drive != s_on) ssr_set(bb_drive);
+        fh_after_drive(bb_drive, bb_was_on, ptc_c, chamber_c, now_us);
         return;
     }
 
@@ -865,5 +1316,7 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
     // still plain on/off drive of a zero-cross SSR; there is no phase cutting.
     bool drive = pb_heater_pid_window_on(
         &s_pid, commanded_duty, esp_timer_get_time());
+    const bool was_on = s_on;
     if (drive != s_on) ssr_set(drive);
+    fh_after_drive(drive, was_on, ptc_c, chamber_c, now_us);
 }

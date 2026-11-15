@@ -1,0 +1,15 @@
+menu "DragonBreath heater"
+
+config PB_FIRST_HEAT_REPORT_ONLY
+    bool "First-heat check: report only, never latch"
+    default n
+    help
+        If disabled (the default), a "wrong roles" or "no rise" result of the
+        first-heat check latches the heater off (see docs/SAFETY.md). If
+        enabled, the check only reports its result in the API and never
+        latches or stores a result. Enable it only to recover from a false trip
+        on a unit that you checked by hand. There is no runtime toggle. A safe
+        dev-board build always reports only. The option is inverted on purpose:
+        a build that does not know the option enforces the check.
+
+endmenu

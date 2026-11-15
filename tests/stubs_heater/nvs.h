@@ -7,6 +7,7 @@
 #define ESP_ERR_NVS_BASE              0x1100
 #define ESP_ERR_NVS_NOT_INITIALIZED   (ESP_ERR_NVS_BASE + 0x01)
 #define ESP_ERR_NVS_NOT_FOUND         (ESP_ERR_NVS_BASE + 0x02)
+#define ESP_ERR_NVS_INVALID_LENGTH    (ESP_ERR_NVS_BASE + 0x0c)
 
 typedef enum {
     NVS_READONLY,
@@ -23,5 +24,6 @@ esp_err_t nvs_get_u32(nvs_handle_t handle, const char *key, uint32_t *out_value)
 esp_err_t nvs_set_u32(nvs_handle_t handle, const char *key, uint32_t value);
 esp_err_t nvs_get_i32(nvs_handle_t handle, const char *key, int32_t *out_value);
 esp_err_t nvs_set_i32(nvs_handle_t handle, const char *key, int32_t value);
+esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *out_value, size_t *length);
 esp_err_t nvs_commit(nvs_handle_t handle);
 void nvs_close(nvs_handle_t handle);

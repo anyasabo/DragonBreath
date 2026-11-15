@@ -70,6 +70,25 @@ below into the GitHub Release notes.
   `tools/replay_capture.py` checks a capture against the safety invariants and a model
   of the bang-bang tick. `tools/priors.py` prints the expected values. See
   `docs/CAPTURES.md`.
+- **First-heat check.** Like the stock firmware, the first heat after each boot
+  checks the thermistor roles and the element, until a pass is stored. After
+  12 s of relay ON time the PTC must rise 3 °C and more than twice the chamber.
+  If the chamber rises 2 °C more than twice the PTC, the heater latches off with
+  `sensor roles wrong or PTC sensor not on element (first-heat check)`. If the
+  PTC rises less than 2 °C in 30 s of ON time, the heater latches off with
+  `heater no-rise (first-heat check)`. A failed result needs mostly continuous
+  heat. If both channels rose by similar amounts, the result is `uncertain`: it
+  reports only. A warm element opens no window. Both latches persist and clear
+  like a hazard trip. Unlike stock, the firmware never swaps the channels. If the
+  plugs are crossed, `POST /settings?first_heat_apply_swap=1` stages the swap.
+  `first_heat_rerun=1` runs the check again. The result shows in `first_heat`
+  of `/api/v2/state` and on `/diag`. The stock `ntc_bit` key shows as a hint
+  only. The supported range is ≥ 150 W element power: a 230 V unit on 120 V
+  mains is out of spec. `CONFIG_PB_FIRST_HEAT_REPORT_ONLY=y` builds a report-only
+  firmware for recovery from a false trip. A safe dev-board build reports only.
+  The thresholds are provisional until a first-heat capture of an 82 kΩ and a
+  33 kΩ board exists. See `docs/SAFETY.md`.
+
 ### Changed
 - The firmware also builds with ESP-IDF v6.1. Release builds continue to use
   the version in `.idf-version` (v5.3.6). ESP-IDF 6 builds get cJSON from the component registry and

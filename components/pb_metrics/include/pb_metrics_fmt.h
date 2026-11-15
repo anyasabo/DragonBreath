@@ -31,7 +31,9 @@
 #define PB_METRICS_CAUSE_INHIBITED         7
 #define PB_METRICS_CAUSE_EMERGENCY         8
 #define PB_METRICS_CAUSE_NVS_UNREADABLE    9   // boot restore only, never counted
-#define PB_METRICS_FAULT_CAUSES           10
+#define PB_METRICS_CAUSE_HEATER_NO_RISE   10   // first-heat check
+#define PB_METRICS_CAUSE_SENSOR_ROLES     11   // first-heat check
+#define PB_METRICS_FAULT_CAUSES           12
 
 // Number of esp_reset_reason_t values with a name (ESP_RST_UNKNOWN..CPU_LOCKUP).
 // pb_metrics.c static-asserts it against ESP_RST_CPU_LOCKUP.

@@ -122,6 +122,18 @@ for field in commanded_duty approach_limit constraint method; do
     }
 done
 
+# First-heat check: the state document and /diag must show its result.
+for field in first_heat ptc_rise_c ch_rise_c stock_hint; do
+    grep -q "\"$field\"" "$httpd" || {
+        echo "state document is missing first_heat.$field" >&2
+        exit 1
+    }
+done
+grep -q "s.first_heat" "$adapter" || {
+    echo "/diag no longer shows the first-heat check" >&2
+    exit 1
+}
+
 # Ownership boundary: core owns HTTP/provisioning/recovery; the product adapter
 # supplies API registration, authorization, heater safety and image identity.
 grep -q 'dc_portal_start(&cfg)' "$adapter"

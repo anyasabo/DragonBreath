@@ -41,7 +41,9 @@ _Static_assert(PB_FAULT_NONE == PB_METRICS_CAUSE_NONE &&
                PB_FAULT_PANIC_OFF == PB_METRICS_CAUSE_PANIC_OFF &&
                PB_FAULT_INHIBITED == PB_METRICS_CAUSE_INHIBITED &&
                PB_FAULT_EMERGENCY == PB_METRICS_CAUSE_EMERGENCY &&
-               PB_FAULT_NVS_UNREADABLE == PB_METRICS_CAUSE_NVS_UNREADABLE,
+               PB_FAULT_NVS_UNREADABLE == PB_METRICS_CAUSE_NVS_UNREADABLE &&
+               PB_FAULT_HEATER_NO_RISE == PB_METRICS_CAUSE_HEATER_NO_RISE &&
+               PB_FAULT_SENSOR_ROLES == PB_METRICS_CAUSE_SENSOR_ROLES,
                "fault cause table order");
 _Static_assert(PB_MODE_OFF == 0 && PB_MODE_POWER_ON == 1 && PB_MODE_AUTO == 2 &&
                PB_MODE_DRYING == 3, "mode table order");

@@ -23,12 +23,13 @@
 #define HOST_NVS_MAX_HANDLES 4
 #define HOST_ADC_CHANNELS    5
 
-typedef enum { HOST_NVS_U8 = 1, HOST_NVS_U32, HOST_NVS_I32 } host_nvs_type_t;
+typedef enum { HOST_NVS_U8 = 1, HOST_NVS_U32, HOST_NVS_I32, HOST_NVS_BLOB } host_nvs_type_t;
 
 typedef struct {
     char key[HOST_NVS_KEY_LEN];
     host_nvs_type_t type;
-    uint32_t value;
+    uint32_t value;              // a blob: its first 4 bytes, little-endian
+    uint32_t blob_len;           // HOST_NVS_BLOB only
     bool present;
 } host_nvs_entry_t;
 
@@ -63,6 +64,8 @@ typedef struct {
     bool sem_contended;          // a zero-wait take fails (another task holds it)
     void (*after_give_hook)(void);   // one-shot: runs after the next mutex give
     void (*before_crit_hook)(void);  // one-shot: runs before the next outermost critical enter
+    void (*nvs_set_hook)(const char *key);   // runs before each nvs_set_* (test checks)
+    void (*ntc_read_hook)(void);     // one-shot: runs in the next PTC read (tick test)
 
     // NVS ("app_nvs" is the only namespace the code under test uses). Like ESP-IDF
     // v5.3, each nvs_set_* writes through to flash at once. nvs_commit() writes
@@ -85,6 +88,8 @@ typedef struct {
     float ntc_temp[2];
     int rref_kohm;
     unsigned ntc_reads;
+    bool ntc_swap_active;        // pb_ntc_get_swap_thermistors_active()
+    float ntc_offset_c[2];       // pb_ntc_get_offset_c()
 
     // ADC inputs for the real pb_ntc.c (chain test only), indexed by ADC channel.
     int adc_raw[HOST_ADC_CHANNELS];
@@ -120,3 +125,5 @@ void env_check_quiescent(void);
 bool env_nvs_read(const char *key, uint32_t *out);
 void env_nvs_write(const char *key, host_nvs_type_t type, uint32_t value);
 void env_nvs_erase(const char *key);
+// A blob of len bytes (the host store keeps the first 4 bytes of the value).
+void env_nvs_write_blob(const char *key, uint32_t value, uint32_t len);

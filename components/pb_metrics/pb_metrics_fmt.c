@@ -24,6 +24,8 @@ static const char *const k_causes[PB_METRICS_FAULT_CAUSES] = {  // pb_fault_reas
     [PB_METRICS_CAUSE_INHIBITED]        = "inhibited",
     [PB_METRICS_CAUSE_EMERGENCY]        = "emergency",
     [PB_METRICS_CAUSE_NVS_UNREADABLE]   = "nvs_unreadable",
+    [PB_METRICS_CAUSE_HEATER_NO_RISE]   = "heater_no_rise",
+    [PB_METRICS_CAUSE_SENSOR_ROLES]     = "sensor_roles",
 };
 static const char *const k_reset_reasons[PB_METRICS_RESET_REASONS] = {  // esp_reset_reason_t
     "unknown", "poweron", "ext", "sw", "panic", "int_wdt", "task_wdt", "wdt",

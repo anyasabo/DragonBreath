@@ -335,6 +335,10 @@ These predate/sit beside the versioned control surface and are stable:
   `first_heat_rerun=1` forgets the stored first-heat result. The next heat runs
   the check again. If the reset cannot be saved, the response is HTTP 500, but
   the check still runs again in this session.
+  Only a relay OFF→ON edge with a cold element opens a window. Thus a re-run
+  during a continuous heat has no effect until the relay turns off and on
+  again. An edge with a warm element (PTC ≥ 70 °C, or ≥ the chamber + 10 °C) is
+  skipped. For a clean re-run, let the element cool, then start a new heat.
   `first_heat_apply_swap=1` stages the swap for a stored `wrong_roles` result:
   the opposite of the active mapping. Check the plugs first. If the chamber and
   PTC plugs are crossed, the swap is right. A `wrong_roles` result can also

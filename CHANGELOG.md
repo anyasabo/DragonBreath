@@ -36,6 +36,13 @@ below into the GitHub Release notes.
   on, the heap use increases by approximately 8 KB. See `docs/api-v2.md`.
 - `sdkconfig.defaults` sets `CONFIG_LWIP_DHCP_GET_NTP_SRV=y` for the NTP server
   from DHCP.
+- Fork-only: the dragon-core pin (`anyasabo/dragon-core` 4b801ef) also brings
+  two upstream changes after v0.36.0. The first is the dc_ui Start/Stop fix for
+  manual overrides and safety faults (upstream PR #75). The second moves the
+  captive DNS answer of dc_portal into a pure header.
+- Fork-only: `dependencies.lock` in git is for ESP-IDF 5.3.6. A build with
+  another ESP-IDF version (for example v6.1) writes its lock into the build
+  directory (`DEPENDENCIES_LOCK`), so it does not change the tracked file.
 - `sdkconfig.defaults` turns on the FreeRTOS trace facility and the run-time
   stats (64-bit counter) for the per-task metrics. Static DRAM use increases by
   approximately 1.7 KB.

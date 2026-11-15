@@ -159,7 +159,7 @@ jobs:
 
       # E1 warnings-as-errors: enforced inside the build itself — the top-level
       # CMakeLists applies `-Wall -Wextra -Werror` PRIVATE to every first-party pb_*
-      # component (never to ESP-IDF's own code). The default + HIL builds here and
+      # and db_* component (never to ESP-IDF's own code). The default + HIL builds here and
       # the release build in release.yml all fail on any warning in our components
       # (verified clean under default AND sdkconfig.release).
       #
@@ -211,6 +211,44 @@ jobs:
               -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.debug-devboard-native" \
               build
             sh tests/check_devboard_compileout.sh build-debug-devboard-native
+
+      # Report only: DB_EXTRA_WARNINGS adds -Wdouble-promotion, -Wshadow, -Wformat=2,
+      # -Wundef and -Wstrict-prototypes as warnings, not errors. The job summary shows
+      # the count for each flag. This step does not fail the job.
+      - name: Build with extra warnings (report only)
+        continue-on-error: true
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: v5.3.5
+          target: esp32c3
+          path: '.'
+          command: |
+            set -eo pipefail
+            idf.py -B build-extra-warnings \
+              -DSDKCONFIG="$PWD/build-extra-warnings/sdkconfig.profile" \
+              -DDB_EXTRA_WARNINGS=ON \
+              build 2>&1 | tee build-extra-warnings.log
+
+      - name: Count extra warnings
+        continue-on-error: true
+        run: |
+          {
+            echo '## Extra warnings (DB_EXTRA_WARNINGS=ON)'
+            echo 'Unique locations. "ESP-IDF" counts warnings in ESP-IDF headers that first-party code includes.'
+            echo
+            echo '| flag | first-party | dragon-core | ESP-IDF |'
+            echo '|---|---:|---:|---:|'
+            sed -nE '/^[^ :]+:[0-9]+:[0-9]+: warning: .*\[-W[^]]+\]$/p' build-extra-warnings.log | sort -u |
+              awk '{
+                flag = $NF; gsub(/[][]/, "", flag); src = $1
+                if (src ~ /managed_components\//) o = 2
+                else if (src ~ /\/esp-idf\/|^\/opt\/esp\/idf\//) o = 3
+                else o = 1
+                n[flag, o]++; f[flag] = 1
+              } END {
+                for (k in f) printf "| `%s` | %d | %d | %d |\n", k, n[k, 1], n[k, 2], n[k, 3]
+              }' | sort
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

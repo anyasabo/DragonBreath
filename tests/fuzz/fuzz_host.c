@@ -14,8 +14,8 @@
 
 #define MAX_URI_LEN 512        // CONFIG_HTTPD_MAX_URI_LEN default
 #define STALL_LIMIT 64         // timeouts for one stalled request before we stop
-#define RECV_WAIT_US 5000000   // recv_wait_timeout of HTTPD_DEFAULT_CONFIG()
-#define DRIP_US      4900000   // a drip client sends 1 byte just before the timeout
+#define RECV_WAIT_US 3000000   // recv_wait_timeout that db_portal_start() sets
+#define DRIP_US      2900000   // a drip client sends 1 byte just before the timeout
 #define PURGE_BUF_LEN 32       // CONFIG_HTTPD_PURGE_BUF_LEN default
 
 void fuzz_fail(const char *file, int line, const char *what)
@@ -373,7 +373,7 @@ static int client_recv(char *buf, size_t buf_len)
     if (avail == 0) {
         // The client sent fewer bytes than Content-Length.
         if (!s_knobs.client_stalls) return HTTPD_SOCK_ERR_FAIL;   // it closed the socket
-        // It keeps the socket open: each recv() waits recv_wait_timeout (5 s)
+        // It keeps the socket open: each recv() waits recv_wait_timeout (3 s)
         // and the httpd task can serve no other client in that time.
         s_stalls++;
         FUZZ_CHECK(s_stalls < STALL_LIMIT,

@@ -40,6 +40,7 @@ done
   "$root/components/pb_httpd/pb_auth.c" \
   "$root/components/pb_httpd/pb_httpd_replay.c" \
   "$root/components/pb_metrics/pb_metrics_fmt.c" \
+  "$root/components/pb_metrics/pb_panic_record.c" \
   "$root/components/pb_policy/pb_policy.c" \
   "$root/tests/vendor/cjson/cJSON.c" \
   -lm -o "$work/fuzz_httpd"
@@ -56,6 +57,7 @@ strict="$strict -DCONFIG_DB_AUTH_LOCKOUT_DURATION_S=60"
   "$root/components/pb_httpd/pb_auth.c" \
   "$root/components/pb_httpd/pb_httpd_replay.c" \
   "$root/components/pb_metrics/pb_metrics_fmt.c" \
+  "$root/components/pb_metrics/pb_panic_record.c" \
   "$root/components/pb_policy/pb_policy.c" \
   "$root/tests/vendor/cjson/cJSON.c" \
   -lm -o "$work/fuzz_httpd_strict"

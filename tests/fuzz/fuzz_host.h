@@ -20,7 +20,7 @@ typedef struct {
     bool nvs_write_fails;  // each NVS write or commit returns an error
     bool recv_timeouts;    // httpd_req_recv() returns a few timeouts between chunks
     bool client_stalls;    // a body shorter than Content-Length: the client keeps the socket open
-    bool client_drips;     // the client sends 1 byte for each 4.9 s, up to Content-Length
+    bool client_drips;     // the client sends 1 byte for each 2.9 s, up to Content-Length
     uint8_t device[2];     // device state; each harness gives its own meaning
 } fuzz_knobs_t;
 
@@ -79,9 +79,10 @@ void fuzz_check_routes(const char *const *routes, size_t count);
 
 // The most time that one request can hold the httpd task: the time that the
 // task waits for the client in recv(), for the headers, the body and the purge.
-// dragon-core dc_portal (fix/httpd-request-deadline) closes a request after
-// 20 s. A pb_httpd body read alone stops after about 15 s.
-#define FUZZ_REQUEST_BOUND_US (20 * 1000000LL)
+// A body read (pb_httpd and dc_portal) checks its 10 s deadline before each
+// recv(), and one recv() waits at most 3 s (db_portal_start()). Thus a body
+// read stops after about 13 s. The bound has 2 s of margin.
+#define FUZZ_REQUEST_BOUND_US (15 * 1000000LL)
 
 // Run one route on one request, as esp_http_server does, and check the general
 // invariants:

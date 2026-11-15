@@ -26,6 +26,7 @@
 #include "fuzz_host.h"
 #include "nvs.h"
 #include "pb_httpd.h"
+#include "pb_netlog.h"
 #include "pb_policy.h"
 
 #include "cJSON.h"
@@ -172,6 +173,40 @@ bool pb_httpd_auth_ok(httpd_req_t *req)
 {
     // The real check is in fuzz_httpd. Here: the header must be present.
     return httpd_req_get_hdr_value_len(req, PB_AUTH_HEADER) > 0;
+}
+
+// As the real one: on failure, send the API v2 error and return true.
+bool pb_httpd_auth_reject(httpd_req_t *req)
+{
+    if (pb_httpd_auth_ok(req)) return false;
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"error\":{\"code\":\"auth_failed\"}}");
+    return true;
+}
+
+// pb_netlog (fork): the settings in RAM. pb_netlog_config.c is the real host check.
+static pb_netlog_config_t s_netlog;
+
+esp_err_t pb_netlog_get_config(pb_netlog_config_t *out)
+{
+    *out = s_netlog;
+    return ESP_OK;
+}
+
+esp_err_t pb_netlog_set_config(const pb_netlog_config_t *cfg)
+{
+    FUZZ_CHECK(pb_netlog_config_valid(cfg), "invalid netlog config reached the setter");
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("netlog", NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "sl_host", cfg->syslog_host);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) return err;
+    s_netlog = *cfg;
+    fuzz_mutation("netlog config");
+    return ESP_OK;
 }
 
 esp_err_t pb_httpd_register(httpd_handle_t server) { return server ? ESP_OK : ESP_ERR_INVALID_ARG; }
@@ -392,6 +427,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     s_armed = s_knobs.device[0] & 0x02;
     s_scanning = false;
     s_persist_failures = 0;
+    pb_netlog_config_default(&s_netlog);
     s_wrapped_count = 0;
     FUZZ_CHECK(db_portal_start() == ESP_OK, "db_portal_start failed");
     static const char *const routes[] = {

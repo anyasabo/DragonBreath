@@ -152,6 +152,44 @@ const char *pb_heater_fault_reason(void) { return H.latched ? "fuzz fault" : NUL
 bool pb_heater_is_on(void) { return H.target_c > 0.0f && !H.latched; }
 bool pb_heater_heat_mode(void) { return H.target_c > 0.0f; }
 
+// ---- first-heat fakes (fork) -------------------------------------------------------
+
+static pb_heater_first_heat_t s_fh;
+
+void pb_heater_get_first_heat(pb_heater_first_heat_t *out) { *out = s_fh; }
+
+// As the real one: the RAM reset applies, and a failed NVS write returns the error.
+esp_err_t pb_heater_first_heat_rerun(void)
+{
+    s_fh.stored = PB_FH_STORED_UNKNOWN;
+    s_fh.state = PB_FH_IDLE;
+    fuzz_mutation("first-heat rerun");
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("app_nvs", NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(h, "fh_res", 0);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+const char *pb_heater_first_heat_state_str(pb_fh_state_t st) { return st == PB_FH_PASS ? "pass" : "idle"; }
+const char *pb_heater_first_heat_stored_str(pb_fh_stored_t st)
+{
+    return st == PB_FH_STORED_WRONG_ROLES ? "wrong_roles" : "unknown";
+}
+const char *pb_heater_first_heat_stock_str(pb_fh_stock_hint_t h) { (void)h; return "none"; }
+
+// ---- pb_metrics fakes (fork) ----------------------------------------------------------
+
+unsigned pb_metrics_reset_reason(void) { return 1; }   // ESP_RST_POWERON
+
+esp_err_t pb_httpd_metrics_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain; version=0.0.4");
+    return httpd_resp_sendstr(req, "dragonbreath_up 1\n");
+}
+
 // ---- pb_ntc, pb_leds, pb_fan fakes ------------------------------------------------
 
 static struct {
@@ -368,6 +406,14 @@ esp_err_t esp_ota_set_boot_partition(const esp_partition_t *p)
     return ESP_OK;
 }
 
+// No setup AP: a client is never on the setup AP (require-token build).
+esp_netif_t *esp_netif_get_handle_from_ifkey(const char *if_key) { (void)if_key; return NULL; }
+esp_err_t esp_netif_get_ip_info(esp_netif_t *netif, esp_netif_ip_info_t *info)
+{
+    (void)netif;
+    memset(info, 0, sizeof *info);
+    return ESP_ERR_INVALID_STATE;
+}
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap) { ap->rssi = -50; ap->primary = 6; return ESP_OK; }
 uint32_t esp_get_free_heap_size(void) { return 100000; }
 uint32_t esp_get_minimum_free_heap_size(void) { return 90000; }
@@ -394,6 +440,9 @@ static void device_reset(const fuzz_knobs_t *k)
     s_source = (dc_ctl_source_t)((k->device[0] >> 4) % DC_SRC_MAX);
     s_random = 0;
     zones_reset();
+    memset(&s_fh, 0, sizeof s_fh);
+    s_fh.stored = (pb_fh_stored_t)(k->device[1] & 0x03);
+    s_fh.enforced = true;
 
     // A configured control token: then the auth header must match it.
     if (k->device[0] & 0x01) fuzz_nvs_put_str("ctl_token", "fuzz-token");
@@ -414,7 +463,7 @@ static void device_reset(const fuzz_knobs_t *k)
         "POST /api/v2/restart", "POST /api/v2/boot-inactive", "POST /api/v2/factory-reset",
         "POST /api/v2/token", "GET /api/v2/calibration", "POST /api/v2/calibration",
         "GET /api/v2/zones", "POST /api/v2/zones", "GET /api/v2/heater_method",
-        "POST /api/v2/heater_method",
+        "POST /api/v2/heater_method", "GET /metrics",
     };
     fuzz_check_routes(routes, sizeof routes / sizeof routes[0]);
 }

@@ -17,9 +17,8 @@ below into the GitHub Release notes.
   - heap, and the stack high-water mark and CPU time of each task
   - uptime, boot count, reset reason, firmware version, Wi-Fi RSSI and HTTP sockets
 
-  The writer uses
-  integer math only and a fixed 15 KB buffer. If the text does not fit, the
-  response is HTTP 500. See `docs/api-v2.md`.
+  The writer uses integer math only. It streams the response in chunks through
+  a 1 KB buffer. See `docs/api-v2.md`.
 - `GET /api/v2/state` reports `reset_reason` (the `esp_reset_reason()` of this boot,
   for example `poweron` or `task_wdt`).
 - The firmware counts boots in NVS (`app_nvs/boot_cnt`).

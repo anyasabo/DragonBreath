@@ -285,11 +285,13 @@ How the device builds the response:
   reads the other counters with short critical sections.
 - A pure writer (`components/pb_metrics`) formats the text with integer math
   only. It uses no `%f`, no cJSON and no allocation of its own.
-- The text goes into one fixed buffer of 15 KB (`PB_METRICS_BUF_SIZE`), which
-  is allocated for the request and then released. The worst case (24 tasks,
-  maximum values) is approximately 10.9 KB. A typical response is 7–9 KB.
-- If the text does not fit, or the allocation fails, the response is HTTP 500.
-  The device does not send a partial response.
+- The writer streams the text through a 1 KB buffer on the HTTP task stack.
+  The response uses chunked transfer encoding. A typical response is 8–10 KB.
+  The worst case (24 task names, maximum values) is approximately 12 KB.
+- The snapshot (about 1.1 KB) and the task list are on the heap only while
+  the request runs.
+- If the snapshot allocation fails, the response is HTTP 500. If the client
+  closes the connection during the response, the device stops the response.
 
 Rules:
 
@@ -313,31 +315,30 @@ Rules:
 | `dragonbreath_target_celsius` | gauge | | Effective heater target. 0 when off. |
 | `dragonbreath_zone_target_celsius` | gauge | | Filament-zone target from the control source. No sample if no zone is known. |
 | `dragonbreath_fault_latched` | gauge | | 1 if a safety fault or an inhibit is latched. |
-| `dragonbreath_fault_code` | gauge | | `pb_fault_reason_t` of the latch: 0 none, 1 ptc_overtemp, 2 chamber_overtemp, 3 chamber_sensor, 4 ptc_sensor, 5 link_lost, 6 panic_off, 7 inhibited, 8 emergency, 9 nvs_unreadable. |
+| `dragonbreath_fault` | gauge | `cause` = `none`, `ptc_overtemp`, `chamber_overtemp`, `chamber_sensor`, `ptc_sensor`, `link_lost`, `panic_off`, `inhibited`, `emergency`, `nvs_unreadable` | Cause of the latch (state set). `none` is 1 if no fault is latched. |
 | `dragonbreath_heater_inhibited` | gauge | | 1 if heat is inhibited until reboot. |
 | `dragonbreath_source_connected` | gauge | | 1 if the control-source link is up. |
-| `dragonbreath_safety_trips_total` | counter | `cause` = `ptc_overtemp`, `chamber_overtemp`, `chamber_sensor`, `ptc_sensor`, `link_lost`, `inhibited`, `emergency` | New latches since boot. A trip that stays latched counts once. The boot restore of a persisted latch does not count. |
+| `dragonbreath_safety_trips_total` | counter | `cause` = `ptc_overtemp`, `chamber_overtemp`, `chamber_sensor`, `ptc_sensor`, `link_lost`, `inhibited`, `emergency` | Trips since boot. Each cause counts once in a latch episode, also if the latch was already active. A fault clear starts a new episode. The boot restore of a persisted latch does not count. |
 | `dragonbreath_panic_offs_total` | counter | | Front-panel panic-off requests since boot. |
 | `dragonbreath_relay_on_seconds_total` | counter | | SSR on-time since boot. |
 | `dragonbreath_control_ticks_total` | counter | | Control-loop iterations since boot (periodic and wake-up). |
 | `dragonbreath_control_ticks_late_total` | counter | | Periodic ticks that started more than 250 ms after the scheduled time. |
-| `dragonbreath_control_tick_duration_microseconds` | gauge | | Duration of the last control tick. |
-| `dragonbreath_control_tick_duration_max_microseconds` | gauge | | Longest control tick since boot. |
-| `dragonbreath_control_tick_interval_max_microseconds` | gauge | | Longest time between the starts of two ticks since boot. The period is 500 ms. |
+| `dragonbreath_control_tick_duration_seconds` | gauge | | Duration of the last control tick (1 µs resolution). |
+| `dragonbreath_control_tick_duration_max_seconds` | gauge | | Longest control tick since boot. |
+| `dragonbreath_control_tick_interval_max_seconds` | gauge | | Longest time between the starts of two ticks since boot. The period is 0.5 s. |
 | `dragonbreath_heap_free_bytes` | gauge | | Free heap. |
 | `dragonbreath_heap_minimum_free_bytes` | gauge | | Lowest free heap since boot. |
 | `dragonbreath_heap_largest_free_block_bytes` | gauge | | Largest free heap block (8-bit capable). |
 | `dragonbreath_tasks` | gauge | | Number of FreeRTOS tasks. |
-| `dragonbreath_task_stack_free_minimum_bytes` | gauge | `task` | Stack high-water mark: the least free stack since the task started. |
-| `dragonbreath_task_cpu_seconds_total` | counter | `task` | CPU time of the task from the FreeRTOS run-time stats. |
+| `dragonbreath_task_instances` | gauge | `task` | Number of tasks with this name. |
+| `dragonbreath_task_stack_free_minimum_bytes` | gauge | `task` | Stack high-water mark: the least free stack since start. The minimum of the tasks with this name. |
+| `dragonbreath_task_cpu_seconds_total` | counter | `task` | CPU time from the FreeRTOS run-time stats. The sum of the tasks with this name. |
 | `dragonbreath_uptime_seconds` | gauge | | Time since boot. |
-| `dragonbreath_boots_total` | counter | | Boot count in NVS. It increments once at each boot. A factory reset or the Power + Auto reset sets it to 0. |
-| `dragonbreath_reset_reason` | gauge | | `esp_reset_reason()` of this boot as a number. |
-| `dragonbreath_reset_reason_info` | gauge | `reason` | The same reason as a label (the strings of `reset_reason` in `/api/v2/state`). Always 1. |
+| `dragonbreath_boots_total` | counter | | Boot count in NVS. It increments once at each boot. A factory reset or the Power + Auto reset sets it to 0. No sample if the NVS write failed. |
+| `dragonbreath_reset_reason_info` | gauge | `reason` | `esp_reset_reason()` of this boot (the strings of `reset_reason` in `/api/v2/state`). Always 1. |
 | `dragonbreath_build_info` | gauge | `version`, `idf_version` | Firmware and ESP-IDF version. Always 1. |
 | `dragonbreath_wifi_rssi_dbm` | gauge | | RSSI of the station link. No sample if not connected. |
 | `dragonbreath_http_open_sockets` | gauge | | Open client sockets of the HTTP server (`httpd_get_client_list`). |
-| `dragonbreath_metrics_build_duration_microseconds` | gauge | | Time to collect and format the previous `/metrics` response. |
 
 Control-tick timing: the control task records the start and the end of each
 loop with `esp_timer_get_time()`. If a periodic tick starts more than 250 ms
@@ -346,17 +347,21 @@ loop with `esp_timer_get_time()`. If a periodic tick starts more than 250 ms
 late. If `dragonbreath_control_ticks_late_total` increases, or the maximum
 interval is much more than 500 ms, other work delays the control loop.
 
-Per-task metrics: the `task` label is the FreeRTOS task name. If two tasks have
-the same name (for example two `db_sse` streams), the second one is `db_sse#2`.
-The response holds a maximum of 24 tasks. `dragonbreath_tasks` gives the full
-count. The CPU share of a task is the rate of its CPU time:
+Per-task metrics: the `task` label is the FreeRTOS task name. Tasks with the
+same name (for example two `db_sse` streams) share one series. The response
+holds a maximum of 24 task names. `dragonbreath_tasks` gives the full count.
+If the firmware has no FreeRTOS trace facility, the task families are not in
+the response. Without the run-time stats, the CPU family is not there. The CPU
+share of a task is the rate of its CPU time:
 
 ```promql
 rate(dragonbreath_task_cpu_seconds_total[5m])
 ```
 
 The single core gives a sum of 1 for all tasks (`IDLE` is the free CPU time).
-A task that stops (an SSE stream) removes its series.
+If a task stops, its series stops. If one of two tasks with the same name
+stops, the CPU counter of that name decreases. `rate()` sees this as a counter
+reset.
 
 Example scrape configuration (Prometheus, or VictoriaMetrics `vmagent` and
 single-node `-promscrape.config`):

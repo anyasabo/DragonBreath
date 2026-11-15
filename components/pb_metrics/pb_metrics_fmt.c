@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
-// pb_metrics_fmt — Prometheus text format 0.0.4 writer. Pure C: integer math
-// only, no printf, no float, no malloc. See pb_metrics_fmt.h.
+// pb_metrics_fmt — Prometheus text format 0.0.4 writer and the other pure
+// parts of GET /metrics. See pb_metrics_fmt.h.
 #include "pb_metrics_fmt.h"
 
+#include <math.h>
 #include <string.h>
 
 // Keep these tables in the order of the firmware enums named in the comments.
@@ -13,10 +14,18 @@ static const char *const k_ntc_status[] = { // pb_ntc_status_t
     "ok", "short", "open", "uninit",
 };
 static const char *const k_causes[PB_METRICS_FAULT_CAUSES] = {  // pb_fault_reason_t
-    "none", "ptc_overtemp", "chamber_overtemp", "chamber_sensor", "ptc_sensor",
-    "link_lost", "panic_off", "inhibited", "emergency", "nvs_unreadable",
+    [PB_METRICS_CAUSE_NONE]             = "none",
+    [PB_METRICS_CAUSE_PTC_OVERTEMP]     = "ptc_overtemp",
+    [PB_METRICS_CAUSE_CHAMBER_OVERTEMP] = "chamber_overtemp",
+    [PB_METRICS_CAUSE_CHAMBER_SENSOR]   = "chamber_sensor",
+    [PB_METRICS_CAUSE_PTC_SENSOR]       = "ptc_sensor",
+    [PB_METRICS_CAUSE_LINK_LOST]        = "link_lost",
+    [PB_METRICS_CAUSE_PANIC_OFF]        = "panic_off",
+    [PB_METRICS_CAUSE_INHIBITED]        = "inhibited",
+    [PB_METRICS_CAUSE_EMERGENCY]        = "emergency",
+    [PB_METRICS_CAUSE_NVS_UNREADABLE]   = "nvs_unreadable",
 };
-static const char *const k_reset_reasons[] = {  // esp_reset_reason_t
+static const char *const k_reset_reasons[PB_METRICS_RESET_REASONS] = {  // esp_reset_reason_t
     "unknown", "poweron", "ext", "sw", "panic", "int_wdt", "task_wdt", "wdt",
     "deepsleep", "brownout", "sdio", "usb", "jtag", "efuse", "pwr_glitch",
     "cpu_lockup",
@@ -29,24 +38,95 @@ const char *pb_metrics_reset_reason_str(unsigned reason)
     return reason < COUNT_OF(k_reset_reasons) ? k_reset_reasons[reason] : "unknown";
 }
 
+// ---- pure helpers ----------------------------------------------------------
+
+bool pb_metrics_add_task(pb_metrics_snapshot_t *s, const char *name,
+                         uint32_t stack_free_bytes, uint64_t cpu_us)
+{
+    if (!s || !name) return false;
+    char key[PB_METRICS_TASK_NAME_LEN + 1];
+    strncpy(key, name, PB_METRICS_TASK_NAME_LEN);
+    key[PB_METRICS_TASK_NAME_LEN] = '\0';
+    unsigned n = s->n_tasks < PB_METRICS_MAX_TASKS ? s->n_tasks : PB_METRICS_MAX_TASKS;
+    for (unsigned i = 0; i < n; i++) {
+        pb_metrics_task_t *t = &s->tasks[i];
+        if (strcmp(t->name, key) != 0) continue;
+        if (t->instances < UINT16_MAX) t->instances++;
+        if (stack_free_bytes < t->stack_free_min_bytes) t->stack_free_min_bytes = stack_free_bytes;
+        t->cpu_us += cpu_us;
+        return true;
+    }
+    if (n >= PB_METRICS_MAX_TASKS) return false;
+    pb_metrics_task_t *t = &s->tasks[n];
+    memcpy(t->name, key, sizeof t->name);
+    t->instances = 1;
+    t->stack_free_min_bytes = stack_free_bytes;
+    t->cpu_us = cpu_us;
+    s->n_tasks = (uint16_t)(n + 1);
+    return true;
+}
+
+int32_t pb_metrics_tenths(float c)
+{
+    if (!isfinite(c) || c > 100000.0f || c < -100000.0f) return PB_METRICS_TEMP_UNKNOWN;
+    float t = c * 10.0f;
+    return (int32_t)(t >= 0.0f ? t + 0.5f : t - 0.5f);
+}
+
+static uint32_t clamp_u32(int64_t v)
+{
+    if (v < 0) return 0;
+    return v > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)v;
+}
+
+void pb_metrics_tick_update(pb_metrics_tick_state_t *st, int64_t start_us,
+                            int64_t end_us, int64_t scheduled_us)
+{
+    uint32_t duration = clamp_u32(end_us - start_us);
+    st->ticks++;
+    if (scheduled_us != 0 && start_us - scheduled_us > PB_METRICS_TICK_LATE_US) st->late++;
+    st->last_us = duration;
+    if (duration > st->max_us) st->max_us = duration;
+    if (st->prev_start_us != 0) {
+        uint32_t interval = clamp_u32(start_us - st->prev_start_us);
+        if (interval > st->interval_max_us) st->interval_max_us = interval;
+    }
+    st->prev_start_us = start_us;
+}
+
+// ---- streaming writer --------------------------------------------------------
+
 typedef struct {
     char *buf;
     size_t cap;
-    size_t len;
-    bool overflow;
+    size_t len;          // bytes in buf, not yet given to the sink
+    long total;          // bytes given to the sink
+    pb_metrics_sink_fn sink;
+    void *ctx;
+    bool failed;
     bool labels_open;
 } writer_t;
 
+static void flush(writer_t *w)
+{
+    if (w->failed || w->len == 0) return;
+    if (!w->sink(w->ctx, w->buf, w->len)) w->failed = true;
+    else w->total += (long)w->len;
+    w->len = 0;
+}
+
 static void put(writer_t *w, const char *s, size_t n)
 {
-    if (w->overflow) return;
-    // Keep one byte for the NUL terminator.
-    if (n >= w->cap - w->len) {
-        w->overflow = true;
-        return;
+    while (n && !w->failed) {
+        if (w->len == w->cap) flush(w);
+        if (w->failed) return;
+        size_t room = w->cap - w->len;
+        size_t k = n < room ? n : room;
+        memcpy(w->buf + w->len, s, k);
+        w->len += k;
+        s += k;
+        n -= k;
     }
-    memcpy(w->buf + w->len, s, n);
-    w->len += n;
 }
 
 static void put_str(writer_t *w, const char *s)
@@ -196,6 +276,14 @@ static void counter_u64(writer_t *w, const char *name, const char *help, uint64_
     end_u64(w, v);
 }
 
+// One family with one unlabeled sample: microseconds written as seconds.
+static void gauge_us(writer_t *w, const char *name, const char *help, uint64_t us)
+{
+    family(w, name, "gauge", help);
+    sample(w, name);
+    end_fixed(w, us, 6);
+}
+
 static void sensor_temp(writer_t *w, const char *sensor, int32_t dc)
 {
     if (dc == PB_METRICS_TEMP_UNKNOWN) return;   // no sample for an invalid reading
@@ -222,10 +310,11 @@ static void tenths_gauge(writer_t *w, const char *name, const char *help, int32_
     end_tenths(w, dc);
 }
 
-int pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap)
+long pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap,
+                       pb_metrics_sink_fn sink, void *ctx)
 {
-    if (!s || !buf || cap == 0) return -1;
-    writer_t w = { .buf = buf, .cap = cap };
+    if (!s || !buf || cap == 0 || !sink) return -1;
+    writer_t w = { .buf = buf, .cap = cap, .sink = sink, .ctx = ctx };
 
     family(&w, "dragonbreath_temperature_celsius", "gauge",
            "Smoothed sensor temperature. No sample if the sensor status is not ok.");
@@ -257,17 +346,21 @@ int pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap)
 
     gauge_u64(&w, "dragonbreath_fault_latched", "1 if a safety fault or an inhibit is latched.",
               s->fault_latched);
-    gauge_u64(&w, "dragonbreath_fault_code", "Cause code of the latched fault (pb_fault_reason_t, 0 = none).",
-              s->fault_code);
+    family(&w, "dragonbreath_fault", "gauge",
+           "Cause of the latched fault. 1 for the current cause (none if no latch), 0 for the others.");
+    for (unsigned i = 0; i < PB_METRICS_FAULT_CAUSES; i++) {
+        sample(&w, "dragonbreath_fault");
+        label(&w, "cause", k_causes[i]);
+        end_u64(&w, s->fault_code == i);
+    }
     gauge_u64(&w, "dragonbreath_heater_inhibited", "1 if heat is inhibited until reboot.",
               s->inhibited);
     gauge_u64(&w, "dragonbreath_source_connected", "1 if the control source link is up.",
               s->source_connected);
 
     family(&w, "dragonbreath_safety_trips_total", "counter",
-           "New safety latches since boot, by cause. Panic-offs are in dragonbreath_panic_offs_total.");
+           "Safety trips since boot, by cause. Panic-offs are in dragonbreath_panic_offs_total.");
     for (unsigned i = 1; i < PB_METRICS_FAULT_CAUSES; i++) {
-        // Panic-off has its own counter. nvs_unreadable occurs only as a boot restore.
         if (i == PB_METRICS_CAUSE_PANIC_OFF || i == PB_METRICS_CAUSE_NVS_UNREADABLE) continue;
         sample(&w, "dragonbreath_safety_trips_total");
         label(&w, "cause", k_causes[i]);
@@ -283,13 +376,13 @@ int pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap)
     counter_u64(&w, "dragonbreath_control_ticks_late_total",
                 "Periodic control ticks that started more than 250 ms after the scheduled time.",
                 s->ticks_late);
-    gauge_u64(&w, "dragonbreath_control_tick_duration_microseconds",
-              "Duration of the last control tick.", s->tick_last_us);
-    gauge_u64(&w, "dragonbreath_control_tick_duration_max_microseconds",
-              "Longest control tick since boot.", s->tick_max_us);
-    gauge_u64(&w, "dragonbreath_control_tick_interval_max_microseconds",
-              "Longest time between the starts of two control ticks since boot.",
-              s->tick_interval_max_us);
+    gauge_us(&w, "dragonbreath_control_tick_duration_seconds",
+             "Duration of the last control tick.", s->tick_last_us);
+    gauge_us(&w, "dragonbreath_control_tick_duration_max_seconds",
+             "Longest control tick since boot.", s->tick_max_us);
+    gauge_us(&w, "dragonbreath_control_tick_interval_max_seconds",
+             "Longest time between the starts of two control ticks since boot.",
+             s->tick_interval_max_us);
 
     gauge_u64(&w, "dragonbreath_heap_free_bytes", "Free heap.", s->heap_free);
     gauge_u64(&w, "dragonbreath_heap_minimum_free_bytes", "Lowest free heap since boot.",
@@ -297,30 +390,44 @@ int pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap)
     gauge_u64(&w, "dragonbreath_heap_largest_free_block_bytes", "Largest free heap block.",
               s->heap_largest_block);
 
-    gauge_u64(&w, "dragonbreath_tasks", "Number of FreeRTOS tasks.", s->task_count);
     unsigned n = s->n_tasks < PB_METRICS_MAX_TASKS ? s->n_tasks : PB_METRICS_MAX_TASKS;
-    family(&w, "dragonbreath_task_stack_free_minimum_bytes", "gauge",
-           "Stack high-water mark: the least free stack of the task since it started.");
-    for (unsigned i = 0; i < n; i++) {
-        sample(&w, "dragonbreath_task_stack_free_minimum_bytes");
-        label(&w, "task", s->tasks[i].name);
-        end_u64(&w, s->tasks[i].stack_free_min_bytes);
+    if (s->task_stack_valid || s->task_cpu_valid) {
+        gauge_u64(&w, "dragonbreath_tasks", "Number of FreeRTOS tasks.", s->task_count);
+        family(&w, "dragonbreath_task_instances", "gauge", "Number of tasks with this name.");
+        for (unsigned i = 0; i < n; i++) {
+            sample(&w, "dragonbreath_task_instances");
+            label(&w, "task", s->tasks[i].name);
+            end_u64(&w, s->tasks[i].instances);
+        }
     }
-    family(&w, "dragonbreath_task_cpu_seconds_total", "counter",
-           "CPU time of the task since it started. rate() gives the CPU share.");
-    for (unsigned i = 0; i < n; i++) {
-        sample(&w, "dragonbreath_task_cpu_seconds_total");
-        label(&w, "task", s->tasks[i].name);
-        end_fixed(&w, s->tasks[i].cpu_us, 6);
+    if (s->task_stack_valid) {
+        family(&w, "dragonbreath_task_stack_free_minimum_bytes", "gauge",
+               "Stack high-water mark: the least free stack since start (minimum over tasks with this name).");
+        for (unsigned i = 0; i < n; i++) {
+            sample(&w, "dragonbreath_task_stack_free_minimum_bytes");
+            label(&w, "task", s->tasks[i].name);
+            end_u64(&w, s->tasks[i].stack_free_min_bytes);
+        }
+    }
+    if (s->task_cpu_valid) {
+        family(&w, "dragonbreath_task_cpu_seconds_total", "counter",
+               "CPU time of the tasks with this name. rate() gives the CPU share.");
+        for (unsigned i = 0; i < n; i++) {
+            sample(&w, "dragonbreath_task_cpu_seconds_total");
+            label(&w, "task", s->tasks[i].name);
+            end_fixed(&w, s->tasks[i].cpu_us, 6);
+        }
     }
 
     family(&w, "dragonbreath_uptime_seconds", "gauge", "Time since boot.");
     sample(&w, "dragonbreath_uptime_seconds");
     end_fixed(&w, s->uptime_ms, 3);
-    counter_u64(&w, "dragonbreath_boots_total", "Boot count, kept in NVS. A factory reset sets it to 0.",
-                s->boot_count);
-    gauge_u64(&w, "dragonbreath_reset_reason", "esp_reset_reason() of this boot (numeric).",
-              s->reset_reason);
+    family(&w, "dragonbreath_boots_total", "counter",
+           "Boot count, kept in NVS. A factory reset sets it to 0. No sample if NVS failed.");
+    if (s->boot_count) {
+        sample(&w, "dragonbreath_boots_total");
+        end_u64(&w, s->boot_count);
+    }
     family(&w, "dragonbreath_reset_reason_info", "gauge", "esp_reset_reason() of this boot as a label.");
     sample(&w, "dragonbreath_reset_reason_info");
     label(&w, "reason", pb_metrics_reset_reason_str(s->reset_reason));
@@ -341,10 +448,7 @@ int pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap)
         sample(&w, "dragonbreath_http_open_sockets");
         end_i64(&w, s->http_sockets);
     }
-    gauge_u64(&w, "dragonbreath_metrics_build_duration_microseconds",
-              "Time to collect and format the previous /metrics response.", s->last_build_us);
 
-    if (w.overflow) return -1;
-    buf[w.len] = '\0';
-    return (int)w.len;
+    flush(&w);
+    return w.failed ? -1 : w.total;
 }

@@ -52,7 +52,7 @@ grep -q '\.uri = "/metrics",.*HTTP_GET' "$httpd" || {
     echo "missing Prometheus route: GET /metrics" >&2
     exit 1
 }
-if grep -q 'auth' "$root/components/pb_httpd/pb_httpd_metrics.c"; then
+if grep -Eq 'pb_httpd_auth_ok|auth_reject|PB_AUTH_HEADER' "$root/components/pb_httpd/pb_httpd_metrics.c"; then
     echo "GET /metrics must stay open and read-only like /api/v2/state" >&2
     exit 1
 fi

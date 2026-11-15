@@ -22,6 +22,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"   // recv(), MSG_DONTWAIT/MSG_PEEK for SSE FIN detection
@@ -71,11 +72,38 @@ static portMUX_TYPE s_lockout_mux = portMUX_INITIALIZER_UNLOCKED;
 #endif
 
 // True if the Wi-Fi station is associated, so LAN clients can reach the API.
-// If it is not associated, only clients of the setup AP can send a request.
 static bool sta_associated(void)
 {
     wifi_ap_record_t ap;
     return esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+}
+
+// True if the request's TCP connection ends on the setup AP address. lwIP
+// accepts a packet for any local address on any interface, so this alone does
+// not prove the interface: auth_check also requires an unassociated station.
+static bool request_on_setup_ap(httpd_req_t *req)
+{
+    esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    esp_netif_ip_info_t info = {0};
+    if (!ap || esp_netif_get_ip_info(ap, &info) != ESP_OK || info.ip.addr == 0) return false;
+
+    struct sockaddr_storage local = {0};
+    socklen_t len = sizeof local;
+    if (getsockname(httpd_req_to_sockfd(req), (struct sockaddr *)&local, &len) != 0) return false;
+    uint32_t addr;   // network byte order, like info.ip.addr
+    if (local.ss_family == AF_INET) {
+        addr = ((struct sockaddr_in *)&local)->sin_addr.s_addr;
+    } else if (local.ss_family == AF_INET6) {
+        // The httpd listens on a dual-stack socket: IPv4 peers show as ::ffff:a.b.c.d.
+        // lwIP has no IN6_IS_ADDR_V4MAPPED: check the ::ffff:0:0/96 prefix here.
+        static const uint8_t v4mapped[12] = {0,0,0,0, 0,0,0,0, 0,0,0xff,0xff};
+        const uint8_t *a6 = ((const struct sockaddr_in6 *)&local)->sin6_addr.s6_addr;
+        if (memcmp(a6, v4mapped, sizeof v4mapped) != 0) return false;
+        memcpy(&addr, a6 + 12, sizeof addr);
+    } else {
+        return false;
+    }
+    return addr == info.ip.addr;
 }
 
 static pb_auth_result_t auth_check(httpd_req_t *req)
@@ -99,9 +127,14 @@ static pb_auth_result_t auth_check(httpd_req_t *req)
         .token_match = present && tok[0] != '\0' &&
                        pb_auth_token_equal(hv, strlen(hv), tok, strlen(tok)),
         .require_token = REQUIRE_TOKEN,
-        // Only needed for the require-token decision. Default to the strict value.
-        .lan_reachable = (REQUIRE_TOKEN && tok[0] == '\0') ? sta_associated() : true,
     };
+    if (REQUIRE_TOKEN && tok[0] == '\0') {
+        // Only needed for the require-token decision. Else keep the strict values.
+        in.lan_reachable = sta_associated();
+        in.on_setup_ap = request_on_setup_ap(req);
+    } else {
+        in.lan_reachable = true;
+    }
 #ifdef CONFIG_DB_AUTH_LOCKOUT
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     taskENTER_CRITICAL(&s_lockout_mux);
@@ -130,7 +163,7 @@ bool pb_httpd_auth_ok(httpd_req_t *req)
 
 esp_err_t pb_httpd_set_ctl_token(const char *token)
 {
-    if (token && strlen(token) > PB_AUTH_TOKEN_MAX) return ESP_ERR_INVALID_ARG;
+    if (token && token[0] && !pb_auth_token_valid(token)) return ESP_ERR_INVALID_ARG;
     nvs_handle_t h;
     esp_err_t err = nvs_open("app_nvs", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
@@ -146,7 +179,7 @@ esp_err_t pb_httpd_set_ctl_token(const char *token)
 // Reject a mutating request lacking a valid PB_AUTH_HEADER (403), with no token
 // in a build that requires one (403), or during an auth lockout (429). Returns
 // true when the caller should stop (already responded).
-static bool auth_reject(httpd_req_t *req)
+bool pb_httpd_auth_reject(httpd_req_t *req)
 {
     pb_auth_result_t r = auth_check(req);
     if (r == PB_AUTH_OK) return false;
@@ -550,7 +583,7 @@ static esp_err_t policy_error(
 
 static esp_err_t command_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
@@ -673,7 +706,7 @@ static esp_err_t command_post(httpd_req_t *req)
 
 static esp_err_t heartbeat_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     cJSON *root = recv_json(req);
     cJSON *version = root ? cJSON_GetObjectItemCaseSensitive(root, "api_version") : NULL;
     cJSON *lease_id = root ? cJSON_GetObjectItemCaseSensitive(root, "lease_id") : NULL;
@@ -902,7 +935,7 @@ static bool parse_u32(const char *s, uint32_t *out)
 // recognized field must be present.
 static esp_err_t settings_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
 
     char q[128];
     if (httpd_req_get_url_query_str(req, q, sizeof q) != ESP_OK) {
@@ -1022,7 +1055,7 @@ static esp_err_t calibration_get(httpd_req_t *req)
 // pb_ntc; the clamped effective offsets are echoed back. At least one field required.
 static esp_err_t calibration_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
@@ -1084,7 +1117,7 @@ static esp_err_t zones_get(httpd_req_t *req) { return zones_send(req); }
 // a custom profile. Auth-gated; applies live.
 static esp_err_t zones_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
@@ -1173,7 +1206,7 @@ static esp_err_t heater_method_get(httpd_req_t *req) { return heater_method_send
 
 static esp_err_t heater_method_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
@@ -1199,7 +1232,7 @@ static esp_err_t heater_method_post(httpd_req_t *req)
 // from a delayed task so the JSON flushes before the socket is torn down.
 static esp_err_t restart_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     if (refuse_while_heating(req, "turn the heater off before restarting"))
         return ESP_OK;
     httpd_resp_set_type(req, "application/json");
@@ -1216,7 +1249,7 @@ static esp_err_t restart_post(httpd_req_t *req)
 // refused while heating. Only removes/redirects the boot pointer — no flash write.
 static esp_err_t boot_inactive_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     if (refuse_while_heating(req, "turn the heater off before switching firmware"))
         return ESP_OK;
     const esp_partition_t *inact = esp_ota_get_next_update_partition(NULL);
@@ -1246,7 +1279,7 @@ static esp_err_t boot_inactive_post(httpd_req_t *req)
 // token, safety limits) so the device reboots back to AP provisioning.
 static esp_err_t factory_reset_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     if (refuse_while_heating(req, "turn the heater off before a factory reset"))
         return ESP_OK;
 
@@ -1326,7 +1359,7 @@ static esp_err_t logs_get(httpd_req_t *req)
 // text/plain, oldest -> newest. Read-only; never energizes the heater.
 static esp_err_t console_get(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     char *buf = malloc(DC_EVLOG_CONSOLE_BYTES + 1);
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
@@ -1347,16 +1380,16 @@ static esp_err_t console_get(httpd_req_t *req)
 // with no token set the auth gate admits only setup-AP clients (see auth_check).
 static esp_err_t token_post(httpd_req_t *req)
 {
-    if (auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_OK;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
     cJSON *t = cJSON_GetObjectItemCaseSensitive(root, "token");
     const char *newtok = cJSON_IsString(t) ? t->valuestring : NULL;
-    if (newtok && strlen(newtok) > PB_AUTH_TOKEN_MAX) {
+    if (newtok && newtok[0] && !pb_auth_token_valid(newtok)) {
         cJSON_Delete(root);
         return api_error(req, "400 Bad Request", "invalid_command",
-                         "token must be at most 64 characters", NULL);
+                         "token must be 1-64 printable ASCII characters, no spaces", NULL);
     }
     if (REQUIRE_TOKEN && !(newtok && newtok[0])) {
         // A hardened build must never fall back to the presence-only gate.

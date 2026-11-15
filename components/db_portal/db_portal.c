@@ -558,8 +558,11 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
     if (err != ESP_OK) return err;
     // Blank keeps the stored token, like the other secret fields.
     bool token_changed = token_req.present && token_req.value && token_req.value[0];
-    if (token_changed && strlen(token_req.value) > PB_AUTH_TOKEN_MAX)
-        return request_error("ctl_token", message, message_size);
+    if (token_changed && !pb_auth_token_valid(token_req.value)) {
+        snprintf(message, message_size,
+                 "Control token must be 1-64 printable ASCII characters, no spaces.");
+        return ESP_ERR_INVALID_ARG;
+    }
 #endif
 
     db_portal_product_plan_t plan;
@@ -596,18 +599,21 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
         err = dc_wifi_set_hostname(hostname_req.value);
         if (err != ESP_OK) return persistence_error("hostname", err, message, message_size);
     }
-#ifdef CONFIG_DB_REQUIRE_CONTROL_TOKEN
-    if (token_changed) {
-        err = pb_httpd_set_ctl_token(token_req.value);
-        if (err != ESP_OK) return persistence_error("control token", err, message, message_size);
-    }
-#endif
-    // Source is deliberately last: an invalid or failed config save can never bind
+    // Source is deliberately the last controller setting: an invalid or failed config save can never bind
     // a different controller. Selecting None changes only this enum; credentials stay.
     if (plan.source_changed) {
         err = dc_source_set(plan.source);
         if (err != ESP_OK) return persistence_error("control source", err, message, message_size);
     }
+#ifdef CONFIG_DB_REQUIRE_CONTROL_TOKEN
+    // The token is written after every other setting: if an earlier write fails,
+    // the response is an error and the token did not change. The caller must use
+    // the new token only after a success response.
+    if (token_changed) {
+        err = pb_httpd_set_ctl_token(token_req.value);
+        if (err != ESP_OK) return persistence_error("control token", err, message, message_size);
+    }
+#endif
 
     bool changed = plan.moonraker_changed || plan.bambu_changed || plan.ha_changed ||
                    plan.klipper_mqtt_changed || plan.prusa_changed ||
@@ -821,6 +827,7 @@ static esp_err_t send_json_obj(httpd_req_t *req, cJSON *root)
 // setup UI calls this when the operator opens/clicks Bambu setup, then polls GET.
 static esp_err_t bambu_scan_post(httpd_req_t *req)
 {
+    if (pb_httpd_auth_reject(req)) return ESP_OK;   // starts network activity
     dc_bambu_scan_start();
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "scanning", dc_bambu_scanning());
@@ -884,6 +891,7 @@ static esp_err_t presets_get(httpd_req_t *req)
 // POST /api/v2/presets  body {"presets":[t0,t1,t2,t3]} — save + echo back (clamped).
 static esp_err_t presets_post(httpd_req_t *req)
 {
+    if (pb_httpd_auth_reject(req)) return ESP_OK;   // writes NVS: CSRF-gate it
     int len = req->content_len;
     if (len <= 0 || len > 256) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body"); return ESP_FAIL; }
     char buf[257];

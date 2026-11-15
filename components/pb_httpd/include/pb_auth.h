@@ -24,13 +24,19 @@ typedef struct {
     bool token_match;     // header equals the stored token (pb_auth_token_equal)
     bool require_token;   // CONFIG_DB_REQUIRE_CONTROL_TOKEN
     bool lan_reachable;   // the STA interface is associated (LAN clients can reach us)
+    bool on_setup_ap;     // the request arrived on the setup AP interface
     bool locked_out;      // pb_auth_lockout_active() at the time of the request
 } pb_auth_input_t;
 
 // Order: lockout, then header presence, then the token.
-// With no token set, the header is a presence-only CSRF gate (today's behavior),
-// unless require_token is set and the device is reachable from the LAN.
+// With no token set, the header is a presence-only CSRF gate (today's behavior).
+// If require_token is set, that gate applies only to a request that arrived on
+// the setup AP while the station is not associated.
 pb_auth_result_t pb_auth_decide(const pb_auth_input_t *in);
+
+// True if token is 1..PB_AUTH_TOKEN_MAX characters, each printable ASCII
+// without space (0x21-0x7E). Use it before a token is stored.
+bool pb_auth_token_valid(const char *token);
 
 // Compare two tokens in time that does not depend on where they differ.
 // The loop always runs PB_AUTH_TOKEN_MAX steps. A length above

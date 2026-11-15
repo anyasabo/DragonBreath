@@ -46,6 +46,27 @@ static void test_token_equal(void)
     CHECK(!pb_auth_token_equal(max, PB_AUTH_TOKEN_MAX + 1, max, PB_AUTH_TOKEN_MAX + 1));
 }
 
+static void test_token_valid(void)
+{
+    CHECK(pb_auth_token_valid("a"));
+    CHECK(pb_auth_token_valid("!~Az09-_.:/+="));
+    CHECK(!pb_auth_token_valid(NULL));
+    CHECK(!pb_auth_token_valid(""));
+    CHECK(!pb_auth_token_valid("has space"));
+    CHECK(!pb_auth_token_valid("tab\there"));
+    CHECK(!pb_auth_token_valid("new\nline"));
+    CHECK(!pb_auth_token_valid("del\x7f"));
+    CHECK(!pb_auth_token_valid("caf\xc3\xa9"));   // UTF-8 is not ASCII
+
+    char tok[PB_AUTH_TOKEN_MAX + 2];
+    memset(tok, 'x', sizeof tok);
+    tok[PB_AUTH_TOKEN_MAX] = '\0';
+    CHECK(pb_auth_token_valid(tok));                // exactly the maximum
+    tok[PB_AUTH_TOKEN_MAX] = 'x';
+    tok[PB_AUTH_TOKEN_MAX + 1] = '\0';
+    CHECK(!pb_auth_token_valid(tok));               // one over
+}
+
 static pb_auth_input_t base(void)
 {
     pb_auth_input_t in = {
@@ -54,6 +75,7 @@ static pb_auth_input_t base(void)
         .token_match = false,
         .require_token = false,
         .lan_reachable = true,
+        .on_setup_ap = false,
         .locked_out = false,
     };
     return in;
@@ -83,10 +105,16 @@ static void test_decide_require_token(void)
     pb_auth_input_t in = base();
     in.require_token = true;
 
-    // No token, LAN-reachable: refused with the specific reason.
+    // No token, LAN-reachable: refused with the specific reason, on any interface.
     CHECK(pb_auth_decide(&in) == PB_AUTH_TOKEN_REQUIRED);
-    // No token, station not associated (setup AP only): presence gate.
+    in.on_setup_ap = true;
+    CHECK(pb_auth_decide(&in) == PB_AUTH_TOKEN_REQUIRED);
+    // Station not associated, but the request did not arrive on the setup AP.
     in.lan_reachable = false;
+    in.on_setup_ap = false;
+    CHECK(pb_auth_decide(&in) == PB_AUTH_TOKEN_REQUIRED);
+    // Setup AP client while the station is not associated: presence gate.
+    in.on_setup_ap = true;
     CHECK(pb_auth_decide(&in) == PB_AUTH_OK);
     in.header_present = false;
     CHECK(pb_auth_decide(&in) == PB_AUTH_MISSING);
@@ -97,6 +125,7 @@ static void test_decide_require_token(void)
     in.token_set = true;
     CHECK(pb_auth_decide(&in) == PB_AUTH_MISMATCH);
     in.lan_reachable = false;
+    in.on_setup_ap = true;
     CHECK(pb_auth_decide(&in) == PB_AUTH_MISMATCH);
     in.token_match = true;
     CHECK(pb_auth_decide(&in) == PB_AUTH_OK);
@@ -135,8 +164,9 @@ static void test_lockout_counts_and_expires(void)
     CHECK(pb_auth_lockout_fail(&s, &CFG, 5600));
 }
 
-static void test_lockout_window_slides(void)
+static void test_lockout_fixed_window(void)
 {
+    // The window is fixed: it starts at the first failure and does not slide.
     pb_auth_lockout_t s = {0};
     CHECK(!pb_auth_lockout_fail(&s, &CFG, 0));
     CHECK(!pb_auth_lockout_fail(&s, &CFG, 900));
@@ -161,11 +191,12 @@ static void test_lockout_wraps(void)
 int main(void)
 {
     test_token_equal();
+    test_token_valid();
     test_decide_default_build();
     test_decide_require_token();
     test_decide_lockout_first();
     test_lockout_counts_and_expires();
-    test_lockout_window_slides();
+    test_lockout_fixed_window();
     test_lockout_wraps();
     puts("pb_auth host test: OK");
     return 0;

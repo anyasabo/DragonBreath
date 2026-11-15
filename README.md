@@ -285,9 +285,10 @@ web page. It does not stop a host on your LAN. The API is plain HTTP, so a host
 that can see the traffic can read a token. Use these steps to make the device harder
 to attack:
 
-1. **Set a control token** (Settings → Control token, or `POST /api/v2/token`). Give
-   the same token to Klipper, the PrusaLink helper and each browser. The device
-   compares the token in constant time.
+1. **Set a control token** (Settings → Control token, or `POST /api/v2/token`). Use
+   1-64 printable ASCII characters with no spaces. Give the same token to Klipper,
+   the PrusaLink helper and each browser. The device compares the token in constant
+   time. On each HTTP 403, the dashboard forgets its stored token and asks again.
 2. **Change the setup AP password.** The default `987654321` is public. In the
    default AP mode ("always"), the setup AP stays on next to your Wi-Fi.
 3. **Build options** (`idf.py menuconfig` → *DragonBreath HTTP API security*). All
@@ -295,8 +296,14 @@ to attack:
 
 | Option | What it does |
 |---|---|
-| `CONFIG_DB_REQUIRE_CONTROL_TOKEN` | With no token set, the device refuses LAN control, the settings and OTA (HTTP 403 `token_required`). The device accepts requests without a token only while its Wi-Fi station is not associated: then only clients of the setup AP can reach it. A stored token cannot be cleared. |
-| `CONFIG_DB_AUTH_LOCKOUT` | After 10 wrong tokens in 60 s, every auth check fails for 60 s (HTTP 429 `auth_locked`). The limits are build options. The lockout also stops the correct token, so a remote heat lease can expire and the heater turns off. The front-panel buttons and the safety loop are not affected. |
+| `CONFIG_DB_REQUIRE_CONTROL_TOKEN` | With no token set, the device refuses LAN control, the settings and OTA (HTTP 403 `token_required`). It accepts a request without a token only if two conditions are true: the request arrived on the setup AP address, and the Wi-Fi station is not associated. A stored token cannot be cleared. |
+| `CONFIG_DB_AUTH_LOCKOUT` | After 10 wrong tokens in 60 s, every auth check fails for 60 s. The limits are build options. The API v2 routes return HTTP 429 `auth_locked`. The shared portal routes (OTA, setup) return HTTP 403. The lockout also stops the correct token. |
+
+**The lockout is a denial-of-service lever.** Each host that can reach the API can
+cause a lockout: other LAN hosts, and hosts on other VLANs that can route to the
+device. During a lockout, OTA, settings and the HTTP controllers get errors. A remote
+heat lease then expires, and the heater fails safe to OFF. The front-panel buttons
+and the safety loop continue to operate.
 
 **How to set the first token on a build that requires one:**
 
@@ -309,10 +316,15 @@ to attack:
 - *Device on your Wi-Fi with no token:* hold **Power + Auto** for 5 s. The device
   erases its settings and starts the setup AP. Then do the first step.
 
+**Setup AP risk:** a person in radio range with the setup AP password can set the
+first token. This is possible while the device has no token and the station is not
+associated. The
+default password `987654321` is public. Change the AP password, and set the token
+soon after the first boot. If someone else set the token, hold **Power + Auto** for 5 s.
+
 **What these steps do not stop:** these steps do not stop a host that can read your
-LAN traffic (no TLS). They do not stop a person at the front panel. While the station
-is not associated, they do not stop a person with the setup AP password. OTA images are not signed. The device checks only the
-image format and the project name.
+LAN traffic (no TLS). They do not stop a person at the front panel. OTA images are
+not signed. The device checks only the image format and the project name.
 
 ## Show the dashboard in Fluidd / Mainsail
 The dashboard embeds directly in the Fluidd/Mainsail printer view as an **iframe

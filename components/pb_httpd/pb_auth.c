@@ -6,10 +6,23 @@ pb_auth_result_t pb_auth_decide(const pb_auth_input_t *in)
     if (in->locked_out) return PB_AUTH_LOCKED;
     if (!in->header_present) return PB_AUTH_MISSING;
     if (in->token_set) return in->token_match ? PB_AUTH_OK : PB_AUTH_MISMATCH;
-    // No token: presence-only CSRF gate. A hardened build accepts that only while
-    // the LAN cannot reach the device (setup AP clients only).
-    if (in->require_token && in->lan_reachable) return PB_AUTH_TOKEN_REQUIRED;
+    // No token: presence-only CSRF gate. A hardened build accepts that only for a
+    // setup AP client while the LAN cannot reach the device.
+    if (in->require_token && (in->lan_reachable || !in->on_setup_ap))
+        return PB_AUTH_TOKEN_REQUIRED;
     return PB_AUTH_OK;
+}
+
+bool pb_auth_token_valid(const char *token)
+{
+    if (!token || !token[0]) return false;
+    size_t n = 0;
+    for (; token[n]; n++) {
+        if (n >= PB_AUTH_TOKEN_MAX) return false;
+        unsigned char ch = (unsigned char)token[n];
+        if (ch < 0x21 || ch > 0x7E) return false;
+    }
+    return true;
 }
 
 bool pb_auth_token_equal(const char *given, size_t given_len,

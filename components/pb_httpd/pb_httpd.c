@@ -8,6 +8,7 @@
 #include "pb_ntc.h"
 #include "pb_leds.h"
 #include "pb_policy.h"
+#include "pb_httpd_input.h"
 #include "dc_source.h"
 #include "dc_bambu.h"
 #include "dc_moonraker.h"
@@ -1003,33 +1004,6 @@ static esp_err_t settings_get(httpd_req_t *req)
     return settings_send(req);
 }
 
-// Parse a finite decimal temperature. Trailing non-whitespace is rejected so a
-// partially numeric value can never silently become a safety setting.
-static bool parse_temp(const char *s, float *out)
-{
-    if (!s || !*s) return false;
-    char *end = NULL;
-    float v = strtof(s, &end);
-    if (end == s || !isfinite(v)) return false;
-    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
-    if (*end != '\0') return false;
-    *out = v;
-    return true;
-}
-
-// Parse an unsigned integer (no sign, no junk, no overflow past u32).
-static bool parse_u32(const char *s, uint32_t *out)
-{
-    if (!s || !*s) return false;
-    char *end = NULL;
-    unsigned long v = strtoul(s, &end, 10);
-    if (end == s) return false;
-    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
-    if (*end != '\0') return false;
-    *out = (uint32_t)v;
-    return true;
-}
-
 // POST /settings?max=<C>&comms_ms=<ms>&cool_release=<C>&fb_cut=<C>&leds_enabled=<0|1>&swap_thermistors=<0|1>
 //      &first_heat_rerun=1&first_heat_apply_swap=1 —
 // update any subset. Auth-gated. Each field is optional; the safety values are
@@ -1051,106 +1025,57 @@ static esp_err_t settings_post(httpd_req_t *req)
         q[len] = '\0';
     }
 
-    bool applied = false;
-    char v[24];
-    if (httpd_query_key_value(q, "max", v, sizeof v) == ESP_OK) {
-        float m;
-        if (!parse_temp(v, &m)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad max"); return ESP_FAIL; }
-        pb_heater_set_max_target_c(m);   // clamps + persists
-        applied = true;
+    // Check every field first: a request with one bad field changes nothing.
+    pb_httpd_settings_t s;
+    const char *bad = pb_httpd_settings_parse(q, &s);
+    if (bad) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, bad); return ESP_FAIL; }
+    if (!s.has_max && !s.has_comms_ms && !s.has_cool_release && !s.has_fb_cut
+            && !s.has_filter_temp && !s.has_filter_auto && !s.has_leds_enabled && !s.has_swap
+            && !s.has_first_heat_rerun && !s.has_first_heat_apply_swap) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no known settings (max, comms_ms, cool_release, fb_cut, filter_temp, filter_auto, leds_enabled, swap_thermistors, first_heat_rerun, first_heat_apply_swap)");
+        return ESP_FAIL;
     }
-    if (httpd_query_key_value(q, "comms_ms", v, sizeof v) == ESP_OK) {
-        uint32_t ms;
-        if (!parse_u32(v, &ms)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad comms_ms"); return ESP_FAIL; }
-        pb_heater_set_comms_timeout_ms(ms);   // clamps + persists
-        applied = true;
-    }
-    if (httpd_query_key_value(q, "cool_release", v, sizeof v) == ESP_OK) {
-        float c;
-        if (!parse_temp(v, &c)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad cool_release"); return ESP_FAIL; }
-        pb_heater_set_cool_release_c(c);   // clamps + persists
-        applied = true;
-    }
-    if (httpd_query_key_value(q, "fb_cut", v, sizeof v) == ESP_OK) {
-        float c;
-        if (!parse_temp(v, &c)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad fb_cut"); return ESP_FAIL; }
-        pb_heater_set_fb_cut_c(c);   // 0 clears override -> auto; else clamps [90,104] + persists
-        applied = true;
-    }
-    // AUTO fan-only filtration band. filter_temp and filter_auto may arrive
-    // together or singly; keep the unspecified half at its current value and apply
-    // both through the one policy setter (which range-checks + persists).
-    {
-        char v2[24];
-        bool have_ft = httpd_query_key_value(q, "filter_temp", v, sizeof v) == ESP_OK;
-        bool have_fa = httpd_query_key_value(q, "filter_auto", v2, sizeof v2) == ESP_OK;
-        if (have_ft || have_fa) {
-            float ft = pb_policy_get_filter_temp_c();
-            bool fa = pb_policy_get_filter_auto_enable();
-            if (have_ft && !parse_temp(v, &ft)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad filter_temp"); return ESP_FAIL; }
-            if (have_fa) {
-                uint32_t on;
-                if (!parse_u32(v2, &on)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad filter_auto"); return ESP_FAIL; }
-                fa = on != 0;
-            }
-            if (pb_policy_set_filter_config(ft, fa) != PB_POLICY_OK) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "filter_temp out of range"); return ESP_FAIL; }
-            applied = true;
-        }
-    }
-    if (httpd_query_key_value(q, "leds_enabled", v, sizeof v) == ESP_OK) {
-        uint32_t on;
-        if (!parse_u32(v, &on)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad leds_enabled"); return ESP_FAIL; }
-        if (pb_leds_set_enabled(on != 0) != ESP_OK)   // persists; may fail
-            return api_error(req, "500 Internal Server Error", "persist_failed",
-                             "could not save LED setting", NULL);
-        applied = true;
-    }
-    if (httpd_query_key_value(q, "swap_thermistors", v, sizeof v) == ESP_OK) {
-        uint32_t swap;
-        if (!parse_u32(v, &swap) || swap > 1) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad swap_thermistors");
-            return ESP_FAIL;
-        }
-        if (pb_ntc_set_swap_thermistors(swap != 0) != ESP_OK)
-            return api_error(req, "500 Internal Server Error", "persist_failed",
-                             "could not save thermistor mapping", NULL);
-        applied = true;
-    }
-    // First-heat actions. apply_swap stages the swap for a stored "wrong_roles"
-    // result (it applies after a reboot, like swap_thermistors). The swap is right
-    // only if the plugs are crossed: the result can also mean a PTC sensor that is
-    // not on the element (see first_heat.advice). The firmware never swaps itself.
-    if (httpd_query_key_value(q, "first_heat_apply_swap", v, sizeof v) == ESP_OK) {
-        uint32_t on;
-        if (!parse_u32(v, &on) || on != 1) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad first_heat_apply_swap");
-            return ESP_FAIL;
-        }
+    // first_heat_apply_swap needs a stored "wrong_roles" result. Check it before
+    // a field is applied.
+    if (s.has_first_heat_apply_swap) {
         pb_heater_first_heat_t fh;
         pb_heater_get_first_heat(&fh);
         if (fh.stored != PB_FH_STORED_WRONG_ROLES)
             return api_error(req, "409 Conflict", "invalid_command",
                              "no stored first-heat wrong_roles result", NULL);
-        if (pb_ntc_set_swap_thermistors(!pb_ntc_get_swap_thermistors_active()) != ESP_OK)
-            return api_error(req, "500 Internal Server Error", "persist_failed",
-                             "could not save thermistor mapping", NULL);
-        applied = true;
     }
-    if (httpd_query_key_value(q, "first_heat_rerun", v, sizeof v) == ESP_OK) {
-        uint32_t on;
-        if (!parse_u32(v, &on) || on != 1) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad first_heat_rerun");
-            return ESP_FAIL;
-        }
-        if (pb_heater_first_heat_rerun() != ESP_OK)
-            return api_error(req, "500 Internal Server Error", "persist_failed",
-                             "first-heat re-run applies, but could not be saved", NULL);
-        applied = true;
+
+    if (s.has_max) pb_heater_set_max_target_c(s.max);                    // clamps + persists
+    if (s.has_comms_ms) pb_heater_set_comms_timeout_ms(s.comms_ms);      // clamps + persists
+    if (s.has_cool_release) pb_heater_set_cool_release_c(s.cool_release); // clamps + persists
+    if (s.has_fb_cut) pb_heater_set_fb_cut_c(s.fb_cut);   // 0 clears override -> auto; else clamps [90,104] + persists
+    // AUTO fan-only filtration band. filter_temp and filter_auto may arrive
+    // together or singly; keep the unspecified half at its current value and apply
+    // both through the one policy setter (which range-checks + persists).
+    if (s.has_filter_temp || s.has_filter_auto) {
+        float ft = s.has_filter_temp ? s.filter_temp : pb_policy_get_filter_temp_c();
+        bool fa = s.has_filter_auto ? s.filter_auto : pb_policy_get_filter_auto_enable();
+        if (pb_policy_set_filter_config(ft, fa) != PB_POLICY_OK)
+            return api_error(req, "500 Internal Server Error", "internal",
+                             "could not set the filtration band", NULL);
     }
-    if (!applied) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no known settings (max, comms_ms, cool_release, fb_cut, filter_temp, filter_auto, leds_enabled, swap_thermistors, first_heat_rerun, first_heat_apply_swap)");
-        return ESP_FAIL;
-    }
+    if (s.has_leds_enabled && pb_leds_set_enabled(s.leds_enabled) != ESP_OK)   // persists; may fail
+        return api_error(req, "500 Internal Server Error", "persist_failed",
+                         "could not save LED setting", NULL);
+    if (s.has_swap && pb_ntc_set_swap_thermistors(s.swap) != ESP_OK)
+        return api_error(req, "500 Internal Server Error", "persist_failed",
+                         "could not save thermistor mapping", NULL);
+    // First-heat actions. apply_swap stages the swap for a stored "wrong_roles"
+    // result (it applies after a reboot, like swap_thermistors). The swap is right
+    // only if the plugs are crossed: the result can also mean a PTC sensor that is
+    // not on the element (see first_heat.advice). The firmware never swaps itself.
+    if (s.has_first_heat_apply_swap
+            && pb_ntc_set_swap_thermistors(!pb_ntc_get_swap_thermistors_active()) != ESP_OK)
+        return api_error(req, "500 Internal Server Error", "persist_failed",
+                         "could not save thermistor mapping", NULL);
+    if (s.has_first_heat_rerun && pb_heater_first_heat_rerun() != ESP_OK)
+        return api_error(req, "500 Internal Server Error", "persist_failed",
+                         "first-heat re-run applies, but could not be saved", NULL);
     return settings_send(req);   // echo the clamped result
 }
 
@@ -1278,14 +1203,14 @@ static esp_err_t zones_post(httpd_req_t *req)
             cJSON *nm = cJSON_GetObjectItemCaseSensitive(e, "name");
             double t;
             if (cJSON_IsString(nm) && json_number(e, "target_c", &t)
-                && dc_bambu_zone_set(nm->valuestring, (uint8_t)(t < 0 ? 0 : t)) == ESP_OK)
+                && dc_bambu_zone_set(nm->valuestring, pb_httpd_zone_target_c(t)) == ESP_OK)
                 applied = true;
         }
     } else {
         cJSON *nm = cJSON_GetObjectItemCaseSensitive(root, "name");
         double t;
         if (cJSON_IsString(nm) && json_number(root, "target_c", &t)
-            && dc_bambu_zone_set(nm->valuestring, (uint8_t)(t < 0 ? 0 : t)) == ESP_OK)
+            && dc_bambu_zone_set(nm->valuestring, pb_httpd_zone_target_c(t)) == ESP_OK)
             applied = true;
     }
     cJSON_Delete(root);

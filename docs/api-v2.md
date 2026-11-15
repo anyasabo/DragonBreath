@@ -532,6 +532,10 @@ These predate/sit beside the versioned control surface and are stable:
   `first_heat_stored` and `first_heat_stock_hint` are the same values as
   `first_heat.stored` and `first_heat.stock_hint` in the state document.
 - `POST /settings?max=<°C>&comms_ms=<ms>&cool_release=<°C>&fb_cut=<°C>&filter_temp=<°C>&filter_auto=<0|1>&leds_enabled=<0|1>&swap_thermistors=<0|1>&first_heat_rerun=1&first_heat_apply_swap=1` — update any subset.
+  If one field is bad, the response is HTTP 400 and no field changes.
+  An HTTP 500 comes after a failed save of the filtration band, the LED setting,
+  the thermistor mapping or the first-heat re-run. Then the fields before it can
+  already be applied.
   Auth-gated (`X-DragonBreath-Auth`). Safety values are clamped to the safe
   envelope server-side (the max-target ceiling can never exceed the absolute cap,
   the comms watchdog stays within its min/max) and the clamped effective values
@@ -591,7 +595,8 @@ These predate/sit beside the versioned control surface and are stable:
   mean a PTC sensor that is not on the element. A swap does not repair that. The
   swap applies after a reboot. The reboot also resets the stored result, so the
   next heat checks the new mapping. Without a stored `wrong_roles` result the
-  response is HTTP 409. The firmware never applies a swap by itself.
+  response is HTTP 409 and no field changes. The firmware never applies a swap
+  by itself.
 - `GET /api/v2/calibration` — the per-channel temperature calibration offsets plus
   their bounds and the live readings:
   `{"api_version":2,"chamber_offset_c","ptc_offset_c","min":-5,"max":5,"chamber_c","ptc_c","chamber_raw_c","ptc_raw_c"}`.

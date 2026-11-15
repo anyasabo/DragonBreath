@@ -133,6 +133,15 @@ below into the GitHub Release notes.
   read the body with one receive call. If TCP delivered the body in parts, the
   handler used only the first part, for example `max=6` of `max=60`. A
   `/settings` body longer than 127 bytes now gets HTTP 400, not a silent cut.
+- **`POST /settings` applies all fields or none.** The handler applied each
+  field as soon as it read it. A bad field after a good one gave HTTP 400, but the
+  good field was already saved. Now the handler checks every field first.
+  An integer field with a sign, leading whitespace or a value above 4294967295
+  gets HTTP 400. Before, `leds_enabled=4294967296` turned the LEDs on.
+- **`POST /api/v2/zones`: a target above 255 °C no longer wraps.** The cast to
+  8 bits was undefined behaviour. On the ESP32-C3, 300 became 44 °C and 256
+  became 0 (zone off). Now a target above 255 is clamped, and dc_bambu clamps it
+  to 70 °C.
 
 ### Security
 - Builds use ESP-IDF v5.3.6 (was v5.3.5). It fixes an out-of-bounds read in the

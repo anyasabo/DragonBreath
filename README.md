@@ -130,7 +130,9 @@ With no saved credentials, the setup AP is always on. The build option
 `CONFIG_DB_DEFAULT_AP_MODE` (`idf.py menuconfig` → *DragonBreath Wi-Fi defaults*)
 sets the mode for a device that has no stored mode. This includes a device that
 never changed the mode, so an update to a build with another default changes its mode.
-A mode that you set in the setup page always wins. A front-panel reset erases the stored mode, so the build default
+A mode that you set in the setup page always wins. A device that came from the
+stock firmware and has the old `ap_enabled` setting keeps the mode from that
+setting. A front-panel reset erases the stored mode, so the build default
 applies again. The default AP password `987654321` is public. If you keep the AP on,
 change its password.
 

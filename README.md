@@ -28,7 +28,8 @@ ordering trap.
 [`docs/api-v2.md`](docs/api-v2.md) · safety model → [`docs/SAFETY.md`](docs/SAFETY.md) ·
 OEM parity → [`docs/OEM_PARITY.md`](docs/OEM_PARITY.md) · hardware →
 [`docs/HARDWARE.md`](docs/HARDWARE.md) · hardware-in-loop testing →
-[`docs/HIL.md`](docs/HIL.md) · firmware-distribution integration →
+[`docs/HIL.md`](docs/HIL.md) · network smoke test →
+[`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md) · firmware-distribution integration →
 [`docs/KLIPPER_DISTRIBUTION_INTEGRATION.md`](docs/KLIPPER_DISTRIBUTION_INTEGRATION.md).
 
 ## Install & update
@@ -161,6 +162,7 @@ change its password.
 | Control source (`dc_source`) | ✅ Single-select on `/setup`: Klipper/Moonraker (default) · Klipper MQTT · Home Assistant MQTT Discovery · Bambu LAN MQTT · PrusaLink; optional HA telemetry remains read-only when another source controls heat |
 | On-device diagnostics pages | ✅ `/diag` (live SSE telemetry + trend + CSV) and `/console` (firmware `ESP_LOGx` viewer via auth-gated `GET /api/v2/console`) — shipped v0.8.0 |
 | Syslog + NTP (`pb_netlog`) | Optional RFC 5424 syslog over UDP (`dc_syslog`) with SNTP log timestamps (`dc_time`); set the server in Setup → "Syslog and time" (empty = off). Needs a hardware check. |
+| Smoke test (`tools/smoke.py`) | Attended release check over API v2 after an OTA install: read-only state, heat on/off, comms-watchdog trip, fault persistence over a reboot, panic-off. Runs in CI against a mock server. `python3 tools/smoke.py HOST --token TOKEN` — see [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md) |
 | Diagnostics (`tools/diag.py`) | ✅ Read-only 2 Hz logger (chamber/PTC/SSR/mode/fault + resolved Rref) → live view + CSV; run during a heat cycle to capture behavior. `python3 tools/diag.py [host] [token]` |
 
 **Shared-core boundary:** board-agnostic infrastructure is consumed from the pinned

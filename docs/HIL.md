@@ -73,6 +73,9 @@ optional power LED and UART0 TX:
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 ```
 
+For a release image without a serial console, use the attended network smoke
+test: [`SMOKE_TEST.md`](SMOKE_TEST.md).
+
 ## Profiles
 
 | Target | Transport | Overlay | Typical port | Physical I/O |

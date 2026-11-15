@@ -36,8 +36,8 @@ below into the GitHub Release notes.
   on, the heap use increases by approximately 8 KB. See `docs/api-v2.md`.
 - `sdkconfig.defaults` sets `CONFIG_LWIP_DHCP_GET_NTP_SRV=y` for the NTP server
   from DHCP.
-- Fork-only: the dragon-core pin (`anyasabo/dragon-core` 4b801ef) also brings
-  two upstream changes after v0.36.0. The first is the dc_ui Start/Stop fix for
+- Fork-only: the dragon-core pin (`anyasabo/dragon-core` branch `anya`, 1fa4594)
+  also brings two upstream changes after v0.36.0. The first is the dc_ui Start/Stop fix for
   manual overrides and safety faults (upstream PR #75). The second moves the
   captive DNS answer of dc_portal into a pure header.
 - Fork-only: `dependencies.lock` in git is for ESP-IDF 5.3.6. A build with
@@ -51,6 +51,15 @@ below into the GitHub Release notes.
   default is Always, the same as before, and writes nothing to NVS. The other
   choices write the `ap_mode` NVS key once, before Wi-Fi starts. A stored user
   choice always wins. See README "Setup AP mode".
+- `tools/smoke.py`: an attended release smoke test over API v2 for a release
+  image without a serial console. It reads the state, health and `/metrics`.
+  It heats to a low target (40 °C default, 50 °C maximum) and checks OFF. It
+  trips the comms watchdog at the minimum `comms_ms`. It checks that the fault
+  stays latched over a reboot, and it checks panic-off. It asks before each step that
+  heats or changes a setting. While a heat command can be active, each exit
+  path sends OFF and checks that the relay is off.
+  `tests/test_smoke.py` runs it in CI against a mock API v2 server. See
+  `docs/SMOKE_TEST.md`.
 
 ### Changed
 - The firmware also builds with ESP-IDF v6.1. Release builds continue to use

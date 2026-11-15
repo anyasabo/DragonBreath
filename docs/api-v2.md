@@ -120,7 +120,8 @@ not phase-angle modulation; `heater.output` remains the instantaneous on/off SSR
 command. `heater.approach_limit` reports the product-owned duty ceiling selected
 for the current control error. `heater.constraint` is one of `off`, `none`,
 `approach_limit`, `target_reached`, `local_foldback`, `element_foldback`,
-`pid_error`, or `unknown`.
+`pid_error`, or `unknown`. `approach_limit` means that the soft approach cap is
+active (`heater.approach_limit` < 1.0) and no higher-priority constraint applies.
 
 `heater.method` is the active chamber-control method: `bangbang` (the v1.1.15
 hysteresis on/off drive, the **default**) or `pid` (the v1.1.16 dc_pid path with

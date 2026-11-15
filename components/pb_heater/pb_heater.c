@@ -35,6 +35,9 @@ static pb_fault_reason_t s_fault_code; // guarded by s_mux (machine-readable, pe
 static bool        s_persist_pending;  // guarded by s_mux — a latch persist not yet committed
                                        // to NVS; retried from pb_heater_tick until it lands
 static int64_t     s_persist_retry_us; // guarded by s_mux — last persist-retry timestamp
+static bool        s_latch_persisted;  // guarded by s_mux — the current latch has a cause that
+                                       // belongs in NVS (written, or pending a retry)
+static pb_fault_reason_t s_persist_code; // guarded by s_mux — the code that NVS holds / must hold
 static bool        s_on;            // written only by the control task; atomic read
 static pb_heater_pid_state_t s_pid; // control-task only — shared dc_pid state + SSR window
 static float       s_commanded_duty; // guarded by s_mux; PID output after approach limit
@@ -159,6 +162,7 @@ esp_err_t pb_heater_init(void)
     s_target_c = 0.0f;
     s_control_chamber_c = NAN;
     s_latched_off = false;
+    s_latch_persisted = false;
     s_fault_reason = NULL;
     s_fault_code = PB_FAULT_NONE;
     s_last_link_us = esp_timer_get_time();
@@ -419,8 +423,17 @@ static esp_err_t persist_fault(bool latched, pb_fault_reason_t code)
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) { ESP_LOGE(TAG, "fault persist: nvs_open %s", esp_err_to_name(err)); return err; }
-    err = nvs_set_u8(h, KEY_FAULT_LATCH, latched ? 1 : 0);
-    if (err == ESP_OK) err = nvs_set_u8(h, KEY_FAULT_CODE, (uint8_t)code);
+    // nvs_set_* writes through to flash, so order the keys such that a failure
+    // part way leaves flash LATCHED: on latch write the latch key first, on
+    // clear write it last. (A cleared code with a set latch restores as a generic
+    // latched fault — fail-safe.)
+    if (latched) {
+        err = nvs_set_u8(h, KEY_FAULT_LATCH, 1);
+        if (err == ESP_OK) err = nvs_set_u8(h, KEY_FAULT_CODE, (uint8_t)code);
+    } else {
+        err = nvs_set_u8(h, KEY_FAULT_CODE, (uint8_t)code);
+        if (err == ESP_OK) err = nvs_set_u8(h, KEY_FAULT_LATCH, 0);
+    }
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) ESP_LOGE(TAG, "fault persist: %s", esp_err_to_name(err));
@@ -428,17 +441,23 @@ static esp_err_t persist_fault(bool latched, pb_fault_reason_t code)
 }
 
 // Latch the heater off with a machine-readable code + live reason string. Sets RAM
-// under the lock, then (only on the false->true transition) persists it. persist==
-// false leaves NVS untouched — used for the reboot-restore path (already in NVS)
-// and for the permanent inhibit, whose "a reboot clears it" semantics must not
-// survive a power cycle. drive_ssr is CONTROL-TASK ONLY (it writes the GPIO).
+// under the lock, then persists it if persist==true and the current latch is not
+// persisted yet — also when a hazard trips on top of a RAM-only latch (panic-off,
+// inhibit, the boot NVS_UNREADABLE latch). persist==false leaves NVS untouched —
+// used for the reboot-restore path (already in NVS), panic-off and the permanent
+// inhibit, whose "a reboot clears it" semantics must not survive a power cycle.
+// drive_ssr is CONTROL-TASK ONLY (it writes the GPIO).
 static void do_latch(pb_fault_reason_t code, const char *reason,
                      bool inhibit, bool drive_ssr, bool persist)
 {
     if (drive_ssr) ssr_set(false);
-    bool transition;
+    bool write;
     taskENTER_CRITICAL(&s_mux);
-    transition = !s_latched_off;                 // first latch of this episode?
+    write = persist && !s_latch_persisted;       // NVS does not hold this latch yet?
+    if (write) {
+        s_latch_persisted = true;
+        s_persist_code = code;
+    }
     s_target_c = 0.0f;
     s_latched_off = true;
     if (inhibit) s_inhibited = true;
@@ -448,7 +467,7 @@ static void do_latch(pb_fault_reason_t code, const char *reason,
     s_approach_limit = 0.0f;
     s_constraint = PB_HEATER_CONSTRAINT_OFF;
     taskEXIT_CRITICAL(&s_mux);
-    if (persist && transition) {
+    if (write) {
         if (s_persist_lock) xSemaphoreTake(s_persist_lock, portMAX_DELAY);
         esp_err_t pe = persist_fault(true, code);
         if (s_persist_lock) xSemaphoreGive(s_persist_lock);
@@ -515,6 +534,7 @@ esp_err_t pb_heater_clear_fault(void)
     }
     taskENTER_CRITICAL(&s_mux);
     s_latched_off = false;
+    s_latch_persisted = false;
     s_target_c = 0.0f;              // reset leaves the target at ZERO — a fresh
     s_fault_reason = NULL;          // target command is required to resume heating.
     s_fault_code = PB_FAULT_NONE;
@@ -576,6 +596,14 @@ void pb_heater_load_fault(void)
         // persist=false (already in NVS, or unreadable); drive_ssr=false (init()
         // already forced the SSR off and the control task is not running yet).
         do_latch(code, NULL, /*inhibit=*/false, /*drive_ssr=*/false, /*persist=*/false);
+        if (code != PB_FAULT_NVS_UNREADABLE) {
+            // Restored from NVS, so NVS already holds it. An unreadable store does
+            // not: a later hazard trip must still write its latch.
+            taskENTER_CRITICAL(&s_mux);
+            s_latch_persisted = true;
+            s_persist_code = code;
+            taskEXIT_CRITICAL(&s_mux);
+        }
         ESP_LOGW(TAG, "boot: restored latched fault: %s", pb_heater_fault_str(code));
     }
 }
@@ -607,7 +635,7 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
         if (due && s_persist_lock && xSemaphoreTake(s_persist_lock, 0) == pdTRUE) {
             taskENTER_CRITICAL(&s_mux);
             bool still = s_latched_off;
-            pb_fault_reason_t code = s_fault_code;
+            pb_fault_reason_t code = s_persist_code;   // the hazard, not a later panic-off
             s_persist_retry_us = now;
             taskEXIT_CRITICAL(&s_mux);
             esp_err_t pr = still ? persist_fault(true, code) : ESP_OK;  // cleared -> nothing to write
@@ -753,7 +781,7 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
         constraint = PB_HEATER_CONSTRAINT_LOCAL_FOLDBACK;
     else if (regulation_c >= target)
         constraint = PB_HEATER_CONSTRAINT_TARGET_REACHED;
-    else if (approach_limit < 1.0f && duty >= approach_limit - 0.0005f)
+    else if (approach_limit < 1.0f)   // the soft approach cap is active (see pb_heater_pid_step)
         constraint = PB_HEATER_CONSTRAINT_APPROACH_LIMIT;
 
     // This is the duty actually admitted to the SSR window after downstream

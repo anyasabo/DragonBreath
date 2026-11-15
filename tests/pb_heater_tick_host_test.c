@@ -981,76 +981,144 @@ static void t_strings(void)
     CHECK(strcmp(pb_heater_constraint_str((pb_heater_constraint_t)99), "unknown") == 0);
 }
 
-// --- known gaps -------------------------------------------------------------------
-// These tests show behavior that differs from the documented intent. The run
-// prints "KNOWN GAP (expected)" for each one and stays green, so that CI stays
-// green until the firmware owners decide. PB_HEATER_TEST_KNOWN_GAPS=1 counts
-// them as failures at the end of the run. Do not "fix" them by weakening a check.
+// --- fault persistence across causes, and the approach label --------------------
 
-// Gap 1: a hazard trip while a RAM-only latch is held (panic-off, inhibit, or
-// the boot NVS_UNREADABLE latch) is not written to NVS, because do_latch()
-// persists only on the not-latched -> latched transition. SAFETY.md says that
-// a hazard-driven trip is written to NVS and restored at boot.
-static void t_known_gap_hazard_during_panic_not_persisted(void)
+// A hazard trip on top of a RAM-only latch (panic-off) is written to NVS.
+// SAFETY.md: a hazard-driven trip is written to NVS and restored at boot.
+static void t_hazard_during_panic_persisted_phase1(void)
 {
     start_heating(60.0f);
     pb_heater_request_panic_off("button");
     tick();
+    CHECK(nvs_u("fault_latch") == -1);         // panic-off alone stays RAM-only
     sensors(40.0f, 120.0f);                    // element over-temp while panic-latched
-    expect_trip(PB_FAULT_PTC_OVERTEMP, false);
-    CHECKF(nvs_u("fault_latch") == 1,
-           "PTC over-temp trip while panic-latched was not persisted (fault_latch=%d)",
-           nvs_u("fault_latch"));
+    expect_trip(PB_FAULT_PTC_OVERTEMP, true);
+    // While it stays hot, the repeated trips do not write NVS again.
+    unsigned commits = env->nvs_commits;
+    for (int i = 0; i < 10; ++i) { advance_ms(500); tick(); }
+    CHECK(env->nvs_commits == commits);
+    // A later panic-off does not replace the persisted cause.
+    pb_heater_request_panic_off("button again");
+    tick();
+    CHECK(nvs_u("fault_code") == PB_FAULT_PTC_OVERTEMP);
 }
 
-// Gap 2 (diagnostics only): the "approach_limit" constraint is never reported.
-// dc_pid's filtered derivative equals -rate_filt, so while the cap is active
-// (rate_filt > 0.06 C/s) the output is at most cap - kd * 0.06 = cap - 0.0024,
-// below the cap - 0.0005 tolerance in pb_heater_tick().
-static void t_known_gap_approach_limit_label(void)
+static void t_hazard_during_panic_persisted_phase2(void)
+{
+    boot();
+    CHECK(pb_heater_is_faulted());
+    CHECK(pb_heater_fault_code() == PB_FAULT_PTC_OVERTEMP);
+}
+
+static void t_hazard_during_inhibit_persisted(void)
+{
+    start_heating(60.0f);
+    env->ctx = CTX_CONTROL;
+    pb_heater_inhibit("watchdog");
+    env->ctx = CTX_OTHER;
+    CHECK(nvs_u("fault_latch") == -1);
+    sensors(90.0f, 60.0f);
+    expect_trip(PB_FAULT_CHAMBER_OVERTEMP, true);
+}
+
+static void t_hazard_after_unreadable_boot_persisted(void)
+{
+    env->nvs_fail_open_ro = ESP_FAIL;          // boot latch: NVS_UNREADABLE
+    boot();
+    CHECK(pb_heater_fault_code() == PB_FAULT_NVS_UNREADABLE);
+    sensors(25.0f, 106.0f);
+    expect_trip(PB_FAULT_PTC_OVERTEMP, true);
+}
+
+static void t_restored_latch_not_rewritten(void)
+{
+    env_nvs_write("fault_latch", HOST_NVS_U8, 1);
+    env_nvs_write("fault_code", HOST_NVS_U8, PB_FAULT_CHAMBER_OVERTEMP);
+    boot();
+    unsigned commits = env->nvs_commits;
+    sensors(90.0f, 40.0f);
+    tick();                                    // a trip on top of a restored latch
+    CHECK(env->nvs_commits == commits);
+    CHECK(nvs_u("fault_code") == PB_FAULT_CHAMBER_OVERTEMP);
+}
+
+static void t_hazard_during_panic_deferred(void)
+{
+    // NVS is down when the hazard trips on top of panic-off. The retry writes
+    // the hazard code, not the panic-off code.
+    start_heating(60.0f);
+    pb_heater_request_panic_off("button");
+    tick();
+    env->nvs_fail_set = ESP_FAIL;
+    sensors(40.0f, 120.0f);
+    expect_trip(PB_FAULT_PTC_OVERTEMP, false);
+    pb_heater_request_panic_off("button again");
+    env->nvs_fail_set = 0;
+    sensors(30.0f, 40.0f);
+    advance_ms(3000);
+    tick();
+    CHECK(nvs_u("fault_latch") == 1);
+    CHECK(nvs_u("fault_code") == PB_FAULT_PTC_OVERTEMP);
+}
+
+// The "approach_limit" constraint is reported while the soft approach cap is
+// active.
+static void t_approach_limit_label(void)
 {
     boot();
     CHECK(pb_heater_set_method(PB_HEATER_METHOD_PID) == ESP_OK);
     link_alive();
-    bool shaped = false, labelled = false;
+    bool labelled = false;
     pb_heater_telemetry_t tel;
-    for (int run = 0; run < 3 && !labelled; ++run) {
-        // Hold below the band to build the integral, then climb fast to target.
-        CHECK(set_target(60.0f) == ESP_OK);
-        for (int i = 0; i < 600; ++i) { sensors(56.0f, 70.0f); advance_ms(500); link_alive(); tick(); }
-        for (float c = 56.0f; c < 60.0f; c += 0.05f * (float)(run + 1)) {
-            sensors(c, 70.0f);
-            advance_ms(500);
-            link_alive();
-            tick();
-            pb_heater_get_telemetry(&tel);
-            if (tel.approach_limit < 1.0f && tel.commanded_duty > 0.0f) shaped = true;
-            if (tel.constraint == PB_HEATER_CONSTRAINT_APPROACH_LIMIT) labelled = true;
-        }
-        CHECK(set_target(0.0f) == ESP_OK);
+    CHECK(set_target(60.0f) == ESP_OK);
+    for (int i = 0; i < 600; ++i) { sensors(56.0f, 70.0f); advance_ms(500); link_alive(); tick(); }
+    for (float c = 56.0f; c < 60.0f; c += 0.05f) {
+        sensors(c, 70.0f);
+        advance_ms(500);
+        link_alive();
         tick();
+        pb_heater_get_telemetry(&tel);
+        if (tel.constraint == PB_HEATER_CONSTRAINT_APPROACH_LIMIT) {
+            labelled = true;
+            CHECK(tel.approach_limit < 1.0f);
+            CHECK(tel.commanded_duty <= tel.approach_limit);
+        }
+        if (tel.approach_limit < 1.0f && c < 60.0f)
+            CHECK(tel.constraint == PB_HEATER_CONSTRAINT_APPROACH_LIMIT);
     }
-    CHECK(shaped);
-    CHECKF(labelled, "approach cap was active but the constraint was never approach_limit");
+    CHECK(labelled);
 }
 
-// Gap 3: a clear that fails part way leaves flash unlatched. persist_fault(false)
-// writes the latch key first. ESP-IDF writes each set through to flash, so if the
-// latch write succeeds and the code write fails, flash says "not latched" while
-// RAM stays latched and the API reports an error. After a reboot the latch is
-// gone. SAFETY.md: a failed persist keeps the heater latched.
-static void t_known_gap_partial_clear_unlatches_flash(void)
+// A clear that fails part way leaves flash latched. ESP-IDF writes each set
+// through to flash, so the order of the keys matters.
+static void partial_clear_case(int nth)
 {
     start_heating(60.0f);
     sensors(40.0f, 110.0f);
     expect_trip(PB_FAULT_PTC_OVERTEMP, true);
     sensors(30.0f, 40.0f);
-    env->nvs_fail_set_nth = 2;                 // the second set of the clear fails
+    env->nvs_fail_set_nth = nth;
     CHECK(clear_fault() != ESP_OK);
     CHECK(pb_heater_is_faulted());
     CHECKF(nvs_u("fault_latch") == 1,
            "failed clear left flash unlatched (fault_latch=%d) while RAM is latched",
            nvs_u("fault_latch"));
+}
+
+static void t_partial_clear_first_set_fails(void)  { partial_clear_case(1); }
+static void t_partial_clear_second_set_fails(void)
+{
+    partial_clear_case(2);
+    // The code key is already cleared: the next boot restores a generic latch.
+    env->nvs_fail_set_nth = 0;
+    CHECK(nvs_u("fault_code") == PB_FAULT_NONE);
+}
+
+static void t_partial_clear_phase2(void)
+{
+    boot();
+    CHECK(pb_heater_is_faulted());
+    CHECK(pb_heater_fault_code() == PB_FAULT_EMERGENCY);
 }
 
 int main(int argc, char **argv)
@@ -1125,41 +1193,19 @@ int main(int argc, char **argv)
         RUN(t_method_switch_mid_heat);
         RUN(t_before_init);
         RUN(t_strings);
+        RUN(t_hazard_during_panic_persisted_phase1);
+        RUN_KEEP(t_hazard_during_panic_persisted_phase2);
+        RUN(t_hazard_during_inhibit_persisted);
+        RUN(t_hazard_after_unreadable_boot_persisted);
+        RUN(t_restored_latch_not_rewritten);
+        RUN(t_hazard_during_panic_deferred);
+        RUN(t_approach_limit_label);
+        RUN(t_partial_clear_first_set_fails);
+        RUN(t_partial_clear_second_set_fails);
+        RUN_KEEP(t_partial_clear_phase2);
     }
 
-    // Known gaps are reported but do not fail the run, unless
-    // PB_HEATER_TEST_KNOWN_GAPS=1. Each one is described in the test above.
-    bool strict_gaps = getenv("PB_HEATER_TEST_KNOWN_GAPS")
-                       && strcmp(getenv("PB_HEATER_TEST_KNOWN_GAPS"), "1") == 0;
-    long gaps_seen = 0;
-    if (!only_random) {
-        static const struct { const char *name; void (*fn)(void); } gaps[] = {
-            { "t_known_gap_hazard_during_panic_not_persisted",
-              t_known_gap_hazard_during_panic_not_persisted },
-            { "t_known_gap_approach_limit_label", t_known_gap_approach_limit_label },
-            { "t_known_gap_partial_clear_unlatches_flash",
-              t_known_gap_partial_clear_unlatches_flash },
-        };
-        for (size_t i = 0; i < sizeof(gaps) / sizeof(gaps[0]); ++i) {
-            env_reset();
-            if (env_run_code(gaps[i].fn) != 0) {
-                printf("KNOWN GAP (expected): %s\n", gaps[i].name);
-                gaps_seen++;
-            } else {
-                printf("KNOWN GAP FIXED - remove the marker: %s\n", gaps[i].name);
-            }
-        }
-    }
-
-    long random_gaps = 0;
-    ok &= heater_random_test(&random_gaps);
-    gaps_seen += random_gaps;
-
-    if (gaps_seen > 0)
-        printf("known gaps seen: %ld (%s)\n", gaps_seen,
-               strict_gaps ? "PB_HEATER_TEST_KNOWN_GAPS=1: counted as failures"
-                           : "expected, not counted as failures");
-    if (strict_gaps && gaps_seen > 0) ok = false;
+    ok &= heater_random_test();
 
     if (!ok) {
         fprintf(stderr, "pb_heater tick host test: FAILED\n");

@@ -43,6 +43,7 @@ HEAT_START_OFF_S = 60.0
 AIRFLOW_WINDOW_S = 30.0
 SETTLE_BAND_C = 1.5
 STEP_MIN_S = 2.5 * 3600      # about 3 tau of the CORE One L enclosure
+FIT_MIN_R2 = 0.98            # a fit below this gives no gains in the numbers table
 
 
 # ---------------------------------------------------------------------------- helpers
@@ -220,14 +221,17 @@ def fopdt_fit(u, y, dt, y0=None):
 
 
 def tune(fit, extra_dead_s):
-    """SIMC PI (Skogestad 2003) for tau_c = theta and 3 theta, plus Cohen-Coon PID.
+    """SIMC PI (Skogestad 2003) plus Cohen-Coon PID, all FOR REVIEW.
+    tight: tau_c = max(theta, tau/3). smooth: tau_c = max(3 theta, tau/2).
+    The floor on tau_c keeps a small dead time from giving a very high gain: the SSR
+    window, the 0.1 C steps and the outlet NTC make the real loop slower than the fit.
     Firmware form: duty = Kp e + Ki integral(e dt) + Kd d(-y)/dt, duty 0..1."""
     K, tau = fit["K_c_per_duty"], fit["tau_s"]
     th = fit["theta_s"] + extra_dead_s
     if K <= 0 or tau <= 0:
         return None
     out = {"theta_eff_s": th}
-    for name, tc in (("simc_tight", th), ("simc_smooth", 3 * th)):
+    for name, tc in (("simc_tight", max(th, tau / 3)), ("simc_smooth", max(3 * th, tau / 2))):
         kc = tau / (K * (tc + th))
         ti = min(tau, 4 * (tc + th))
         out[name] = {"kp": kc, "ki": kc / ti, "kd": 0.0, "tau_c_s": tc}
@@ -291,8 +295,7 @@ def section_first_heat(cap):
             continue
         pr = interp(ts_p, vs_p, t) - base_p
         cr = interp(ts_c, vs_c, t) - base_c
-        verdict = hm.fh_eval(sec * 1000, hm.c_to_dc(pr), hm.c_to_dc(cr),
-                             max_on_ms=sec * 1000)
+        verdict = hm.fh_eval(sec * 1000, hm.c_to_dc(pr), hm.c_to_dc(cr))   # firmware window
         out[f"at_{sec}s"] = {"wall_s": t - t_on, "ptc_rise_c": pr, "ch_rise_c": cr,
                              "ratio_ptc_ch": pr / cr if abs(cr) > 0.05 else None,
                              "rule": verdict}
@@ -342,9 +345,14 @@ def section_cold(cap, ambient_c=None):
     if len(idle) < 20 or idle[-1]["t_s"] - idle[0]["t_s"] < 60:
         return {"found": False, "why": "less than 60 s of idle data (relay off, fan off, "
                 f"no heat in the last {COLD_SETTLE_S / 60:.0f} min)"}
-    diffs = [r["ptc_c"] - r["chamber_c"] for r in idle]
-    chs = [r["chamber_c"] for r in idle]
-    pts = [r["ptc_c"] for r in idle]
+    # The state reports calibrated values. Remove the stored offsets: the agreement, the
+    # Rref inverse and a new offset need the uncalibrated (raw) reading.
+    cal = cap.header.get("calibration") or {}
+    off_ch = float(cal.get("chamber_offset_c") or 0.0)
+    off_p = float(cal.get("ptc_offset_c") or 0.0)
+    chs = [r["chamber_c"] - off_ch for r in idle]
+    pts = [r["ptc_c"] - off_p for r in idle]
+    diffs = [p - c for p, c in zip(pts, chs)]
     hrs = (idle[-1]["t_s"] - idle[0]["t_s"]) / 3600
     med = statistics.median(diffs)
     ref = ambient_c
@@ -359,7 +367,8 @@ def section_cold(cap, ambient_c=None):
     other = 33 if rref == 82 else 82
     ch_med, p_med = statistics.median(chs), statistics.median(pts)
     out = {
-        "found": True, "samples": len(idle), "hours": hrs,
+        "found": True, "samples": len(idle), "hours": hrs, "raw": True,
+        "offsets_in_capture": {"chamber_offset_c": off_ch, "ptc_offset_c": off_p},
         "diff_median_c": med, "diff_p5_c": sorted(diffs)[len(diffs) // 20],
         "diff_p95_c": sorted(diffs)[len(diffs) * 19 // 20], "diff_std_c": statistics.pstdev(diffs),
         "diff_slope_c_per_h": ((mean(diffs[-len(diffs) // 4:]) - mean(diffs[:len(diffs) // 4]))
@@ -377,21 +386,26 @@ def section_cold(cap, ambient_c=None):
     hint = []
     if ref is not None:
         o = out["with_other_rref"]
-        if (abs(ch_med - ref) > COLD_LIMIT_C and abs(o["chamber_c"] - ref) <= 2.0
-                and abs(o["ptc_c"] - ref) <= 2.0):
-            hint.append(f"Both readings fit the reference with Rref {other} k: the firmware "
+        if (abs(ch_med - ref) > COLD_LIMIT_C and abs(p_med - ref) > COLD_LIMIT_C
+                and abs(o["chamber_c"] - ref) <= 2.0 and abs(o["ptc_c"] - ref) <= 2.0):
+            hint.append(f"Both raw readings fit the reference with Rref {other} k: the firmware "
                         f"probably uses the wrong Rref ({rref} k).")
     elif max(ch_med, p_med) > 40 or min(ch_med, p_med) <= ntc.T_MIN_C + 0.05:
         hint.append("An idle reading above 40 C or at the 12 C table end is not plausible "
                     "for a room. Give --ambient-c to test the wrong-Rref hypothesis.")
     out["rref_hint"] = hint
+
+    def clamp(v):
+        return max(-5.0, min(5.0, round(v, 1)))
+    # The value to POST replaces the stored offset: new = raw-to-reference correction
+    # = current offset + (reference - calibrated reading).
     if ref is not None and out["agree"] and not hint:
-        out["suggest_offsets"] = {
-            "chamber_offset_c": max(-5.0, min(5.0, round(ref - ch_med, 1))),
-            "ptc_offset_c": max(-5.0, min(5.0, round(ref - p_med, 1)))}
+        out["suggest_offsets"] = {"chamber_offset_c": clamp(ref - ch_med),
+                                  "ptc_offset_c": clamp(ref - p_med), "basis": "reference"}
     elif out["agree"]:
-        out["suggest_offsets"] = {"chamber_offset_c": 0.0,
-                                  "ptc_offset_c": max(-5.0, min(5.0, round(-med, 1)))}
+        out["suggest_offsets"] = {"chamber_offset_c": clamp(off_ch),
+                                  "ptc_offset_c": clamp(ch_med + off_ch - p_med),
+                                  "basis": "PTC aligned to the calibrated chamber"}
     return out
 
 
@@ -650,6 +664,10 @@ def flags(res):
 
 # ---------------------------------------------------------------------------- report
 
+def gains_usable(fit):
+    return bool(fit.get("tau_identifiable")) and fit.get("r2", 0) >= FIT_MIN_R2
+
+
 def numbers_table(res):
     """(quantity, value, firmware destination)."""
     T = []
@@ -662,13 +680,14 @@ def numbers_table(res):
                   "PB_FH_CROSS_RISE_DC, same file"))
     c = res["cold"]
     if c.get("found"):
-        T.append(("idle PTC - chamber", f"{c['diff_median_c']:+.1f} C (std {c['diff_std_c']:.2f})",
+        T.append(("idle PTC - chamber (raw)", f"{c['diff_median_c']:+.1f} C (std {c['diff_std_c']:.2f})",
                   "limit of the planned cold sensor-agreement check (new constant)"))
         if c.get("suggest_offsets"):
             o = c["suggest_offsets"]
-            T.append(("calibration offsets", f"chamber {o['chamber_offset_c']:+.1f} C, "
+            T.append(("calibration offsets (new values)", f"chamber {o['chamber_offset_c']:+.1f} C, "
                       f"PTC {o['ptc_offset_c']:+.1f} C",
-                      "runtime: POST /api/v2/calibration (not a constant, max +-5 C)"))
+                      "runtime: POST /api/v2/calibration replaces the stored offsets "
+                      f"(basis: {o['basis']}, max +-5 C). Not a constant"))
     a = res["airflow"]
     if a["ratio_median"] is not None:
         T.append(("outlet/PTC rise ratio", f"{a['ratio_median']:.3f}",
@@ -685,10 +704,14 @@ def numbers_table(res):
     s = res["step"]
     if s.get("found"):
         f = s["fits"].get("chamber_c")
-        if f and f.get("tuning"):
+        if f and f.get("tuning") and gains_usable(f):
             t = f["tuning"]["simc_smooth"]
-            T.append(("PID gains (SIMC, smooth)", f"Kp {t['kp']:.4f}, Ki {t['ki']:.6f}, Kd 0",
-                      "PB_HEATER_PID_KP / _KI / _KD, components/pb_heater/include/pb_heater_pid.h"))
+            T.append(("PID gains (SIMC smooth, FOR REVIEW)", f"Kp {t['kp']:.4f}, Ki {t['ki']:.6f}, Kd 0",
+                      "PB_HEATER_PID_KP / _KI / _KD, components/pb_heater/include/pb_heater_pid.h. "
+                      "Fit on the outlet NTC: test on the heater before a change"))
+        elif f and f.get("tuning"):
+            T.append(("PID gains", "not given", f"the fit is not reliable (tau identifiable: "
+                      f"{f['tau_identifiable']}, R^2 {f['r2']:.3f}, need {FIT_MIN_R2})"))
         if s.get("max_rise_rate_c_per_s") is not None:
             T.append(("max chamber rise rate", f"{s['max_rise_rate_c_per_s']:.3f} C/s",
                       "compare with PB_HEATER_PID_APPROACH_RATE_C_PER_S (0.06)"))
@@ -729,7 +752,8 @@ def render(res, cap, prior_args):
                  f"Start: PTC {fmt(fh['ptc_start_c'])} C, chamber {fmt(fh['chamber_start_c'])} C "
                  f"({'cold' if fh['cold'] else 'NOT cold: PTC and chamber differ by 5 C or more'}). "
                  f"PTC noise (1 sigma, 60 s before): {fmt(fh['ptc_noise_sigma_c'], '.2f')} C.")
-        L += ["", "| ON time | Wall time | PTC rise | Chamber rise | PTC/chamber | Rule at this point |",
+        L += ["", "| ON time | Wall time | PTC rise | Chamber rise | PTC/chamber | "
+              "Firmware rule now (wait = no decision yet) |",
               "|---|---|---|---|---|---|"]
         for sec in (12, 30):
             x = fh.get(f"at_{sec}s")
@@ -757,6 +781,10 @@ def render(res, cap, prior_args):
     if not c.get("found"):
         L.append(f"Not found: {c['why']}.")
     else:
+        oc = c["offsets_in_capture"]
+        if oc["chamber_offset_c"] or oc["ptc_offset_c"]:
+            L.append(f"The values below are raw: the stored offsets (chamber {oc['chamber_offset_c']:+.1f} C, "
+                     f"PTC {oc['ptc_offset_c']:+.1f} C) are removed.")
         L.append(f"{c['samples']} idle samples over {c['hours']:.2f} h. PTC - chamber: median "
                  f"{c['diff_median_c']:+.2f} C, p5 {c['diff_p5_c']:+.2f}, p95 {c['diff_p95_c']:+.2f}, "
                  f"std {c['diff_std_c']:.2f}, drift {fmt(c['diff_slope_c_per_h'], '+.2f')} C/h. "
@@ -803,10 +831,15 @@ def render(res, cap, prior_args):
         L.append(f"Longest heat segment: target {s['target_c']:.1f} C for {s['duration_s'] / 60:.0f} min "
                  f"from t = {s['t_start_s']:.0f} s.")
         en = priors.enclosure()
-        L.append(f"\nExpected (priors, printer chamber sensor): gain {en['gain_c_per_duty'][0]:.0f}-"
-                 f"{en['gain_c_per_duty'][1]:.0f} C per duty, tau {en['tau_range'][0]:.0f}-"
-                 f"{en['tau_range'][1]:.0f} min (median {en['tau_min']:.0f}). The 8-12 W/K loss is an "
-                 "estimate. The local chamber NTC sits in the outlet: expect a larger gain and a fast part.")
+        L.append(f"\nThe fit of chamber_c is on the heater's own chamber NTC. That NTC sits in the "
+                 "outlet air of the heater, not in the bulk chamber air. Its response has a fast part "
+                 "(the outlet air follows the element) and the slow enclosure part. Expected (priors, "
+                 f"estimates): gain {en['gain_c_per_duty'][0]:.0f} C per duty or more (the enclosure "
+                 "air) plus an outlet offset that is not known. The enclosure range "
+                 f"{en['gain_c_per_duty'][0]:.0f}-{en['gain_c_per_duty'][1]:.0f} C per duty, tau "
+                 f"{en['tau_range'][0]:.0f}-{en['tau_range'][1]:.0f} min (median {en['tau_min']:.0f}) "
+                 "applies to the printer chamber sensor: to printer_chamber_c if the state has it, else "
+                 "to a fit of the printer data with thermal_fit.py. The 8-12 W/K loss is an estimate.")
         for col, f in s["fits"].items():
             L.append(f"\nFOPDT fit of {col} with the relay as input (0/1): K = {f['K_c_per_duty']:.1f} C "
                      f"per duty, tau = {f['tau_s'] / 60:.1f} min, dead time = {f['theta_s']:.0f} s, "
@@ -815,13 +848,15 @@ def render(res, cap, prior_args):
                         "and K are uncertain."))
             t = f.get("tuning")
             if t:
-                L.append(f"Tuning with effective dead time {t['theta_eff_s']:.0f} s (fit + half the "
-                         f"{PID_WINDOW_S:.0f} s SSR window + half a grid step). Firmware form: "
-                         "duty = Kp e + Ki integral(e dt) + Kd d(-y)/dt.")
+                L.append(f"Tuning FOR REVIEW, with effective dead time {t['theta_eff_s']:.0f} s (fit + "
+                         f"half the {PID_WINDOW_S:.0f} s SSR window + half a grid step), tau_c at least "
+                         "tau/3. Firmware form: duty = Kp e + Ki integral(e dt) + Kd d(-y)/dt."
+                         + ("" if gains_usable(f) else f" The fit is not reliable (needs 3 tau of data "
+                            f"and R^2 >= {FIT_MIN_R2}): do not use these gains."))
                 L += ["", "| Method | Kp (1/C) | Ki (1/(C s)) | Kd (s/C) |", "|---|---|---|---|"]
-                for name, label in (("simc_tight", "SIMC PI, tau_c = theta"),
-                                    ("simc_smooth", "SIMC PI, tau_c = 3 theta (suggested)"),
-                                    ("cohen_coon", "Cohen-Coon PID (reference only)")):
+                for name, label in (("simc_tight", "SIMC PI, tau_c = max(theta, tau/3)"),
+                                    ("simc_smooth", "SIMC PI, tau_c = max(3 theta, tau/2) (suggested)"),
+                                    ("cohen_coon", "Cohen-Coon PID (reference only, not valid for theta/tau < 0.1)")):
                     g = t[name]
                     L.append(f"| {label} | {g['kp']:.4f} | {g['ki']:.6f} | {g['kd']:.4f} |")
                 L.append(f"| current firmware | {CURRENT_PID[0]:.4f} | {CURRENT_PID[1]:.6f} | "

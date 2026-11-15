@@ -20,18 +20,31 @@ also reads its CSV.
 
 ## Safety
 
-- A capture is read-only unless you give `--allow-control --token TOKEN`.
-  Without them, the tool tells you what to press and waits for it.
+- A capture is read-only unless you give `--allow-control --token-file FILE`
+  (or `--token TOKEN`). Without them, the tool tells you what to press and waits
+  for it. Prefer the file: other users can see a command line.
 - With control, the tool sends only `POST /api/v2/command` (`power_on` at the
   scenario target, `off`) and `POST /api/v2/heartbeat` for its own lease. It never
   changes a setting, a calibration offset or a limit. It never clears a fault.
+- An accepted `power_on` also stores its target as `params.manual_target_c` on
+  the device (`docs/api-v2.md`). The front-panel On button then uses that target.
+- The tool sends OFF only to its own heat. If another heat is on (a print in
+  AUTO, Klipper, a button), the tool asks you to stop it.
+- The heartbeat runs in its own thread, so a slow GET cannot let the lease
+  expire. If the main loop stops, the heartbeat stops too, and the firmware
+  comms watchdog stops the heat.
 - The target is 30–60 °C and not above the device `max`.
+- Before heat, the tool compares `--mains-v` with `--rated-v`. If they differ by
+  more than 15 %, it refuses heat. `--allow-mains-mismatch` overrides this.
 - The tool does not start heat in these conditions: a fault is latched, the mode
   is not `off`, a sensor is not `ok`, or the chamber is above target − 2 °C.
 - The tool asks before `power_on`. `--yes` removes the question.
 - While its `power_on` can be active, each exit path (end, error, Ctrl-C,
-  SIGTERM, SIGHUP) sends OFF and checks that the relay is off within 3 s. If
-  not, it prints "Switch the heater off at the mains NOW".
+  SIGTERM, SIGHUP) sends OFF and checks that the relay is off within 3 s. The
+  tool ignores these signals while the OFF runs. If the relay does not go off,
+  it prints "Switch the heater off at the mains NOW".
+- The exit code is 0 only for a capture that reached its stop condition. An
+  interrupt, an abort or a failed OFF gives 1.
 - If another controller takes the heater, the tool does not send OFF over it.
 - The tool also stops its own heat in these conditions: a fault latches, the
   mode changes, the chamber is 10 °C above the target, or the PTC is at 104 °C
@@ -91,13 +104,18 @@ it gives the priors (expected values), then the measured values:
   suggested values for `PB_FH_PASS_RISE_DC` and `PB_FH_CROSS_RISE_DC` with
   their margins.
 - **Cold agreement:** PTC − chamber after 30 min or more with no heat and the
-  fan off. The readings with the other Rref, and the thermistor-chain
+  fan off. The analysis removes the stored calibration offsets (from the header)
+  first. A suggested offset is the new value to POST: it replaces the stored one. The readings with the other Rref, and the thermistor-chain
   hypotheses that fit the resistance ratio (`tools/priors.py`).
 - **Airflow:** the outlet/PTC rise ratio at each heat start, the foldback cycles
   for each hour of heat, and the PTC cooldown time constant with the fan on.
 - **Step response:** a first-order-plus-dead-time fit with the relay as input,
   SIMC PI gains (Skogestad) and Cohen-Coon PID gains in the firmware form
   (duty 0–1 per °C), and the overshoot and settling of the recorded control.
+  The fit uses the heater's own chamber NTC, which sits in the outlet air. The
+  gains are for review only. The closed-loop time constant is at least tau/3.
+  If the data is shorter than 3 tau or R² is below 0.98, the numbers table
+  gives no gains.
 - **Control health:** late ticks, tick times, heap and stack minima.
 - **Replay:** see below.
 

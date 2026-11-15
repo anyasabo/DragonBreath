@@ -88,33 +88,52 @@ def inverse(chamber_c, ptc_c, ambient_c=None, rref_used=82, tol=0.10):
 
     ratio > 1: the display is hotter than the ambient (lower resistance than expected).
     If ambient_c is None, the chamber reading is the reference for the PTC channel.
+    Give raw readings (without the calibration offsets).
+
+    Rref is one strap for both channels. An Rref hypothesis fits only if both channels
+    deviate by the same ratio. With the chamber channel as the reference, an Rref error
+    cannot show: give a real ambient for that test.
     """
     ref = chamber_c if ambient_c is None else ambient_c
     out = {"reference_c": ref, "reference": "chamber channel" if ambient_c is None else "ambient",
            "channels": {}}
+    ratios = {}
+    for name, read in (("chamber", chamber_c), ("ptc", ptc_c)):
+        if read is not None and not ntc.is_clamped(read):
+            ratios[name] = ntc.temp_to_r_kohm(ref) / ntc.temp_to_r_kohm(read)
+    both = (ambient_c is not None and len(ratios) == 2
+            and all(abs(r - 1) > tol for r in ratios.values())
+            and abs(ratios["chamber"] / ratios["ptc"] - 1) <= tol)
+    out["rref_testable"] = ambient_c is not None
+    out["both_channels_same_ratio"] = both
     for name, read in (("chamber", chamber_c), ("ptc", ptc_c)):
         if read is None:
             continue
-        if ntc.is_clamped(read):
+        if name not in ratios:
             out["channels"][name] = {"reading_c": read, "ratio": None,
                                      "fits": ["reading at a table end: the resistance is outside "
                                               "the table (open, short, or a large Rref error)"]}
             continue
-        ratio = ntc.temp_to_r_kohm(ref) / ntc.temp_to_r_kohm(read)
+        ratio = ratios[name]
         fits = []
         if abs(ratio - 1) <= tol:
             fits.append("no chain error (within 10 %)")
         else:
-            implied = rref_used * ratio
-            for rr in ntc.RREF_CHOICES:
-                if rr != rref_used and abs(implied / rr - 1) <= tol:
-                    fits.append(f"wrong Rref: divider {rr} k, firmware uses {rref_used} k")
-            mirror = 33 if rref_used == 82 else 82
-            alt = display_c(ref, mirror, rref_used)
-            if abs(ratio - rref_used / mirror) / (rref_used / mirror) <= 0.15 and not fits:
-                fits.append(f"near the mirror Rref error (firmware {mirror} k on a {rref_used} k "
-                            f"divider gives {alt:.1f} C), but the device reported {rref_used} k: "
-                            "only if the strap report is wrong, and not exact")
+            if both:
+                implied = rref_used * ratio
+                for rr in ntc.RREF_CHOICES:
+                    if rr != rref_used and abs(implied / rr - 1) <= tol:
+                        fits.append(f"wrong Rref: divider {rr} k, firmware uses {rref_used} k")
+                mirror = 33 if rref_used == 82 else 82
+                alt = display_c(ref, mirror, rref_used)
+                if abs(ratio - rref_used / mirror) / (rref_used / mirror) <= 0.15 and not fits:
+                    fits.append(f"near the mirror Rref error (firmware {mirror} k on a {rref_used} k "
+                                f"divider gives {alt:.1f} C), but the device reported {rref_used} k: "
+                                "only if the strap report is wrong, and not exact")
+            else:
+                fits.append("not an Rref error: Rref is common to both channels, and "
+                            + ("the other channel does not deviate in the same way" if ambient_c is not None
+                               else "the reference is the other channel"))
             fits.append(f"thermistor R25 {1 / ratio:.2f} x the table part")
             if ratio > 1:
                 r_read = ntc.temp_to_r_kohm(read)

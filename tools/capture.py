@@ -17,11 +17,15 @@ READ-ONLY BY DEFAULT. The tool reads GET /api/v2/info, /api/v2/state, /settings,
 /api/v2/calibration, /api/v2/heater_method, /api/v2/health and /metrics. In a scenario
 that needs heat, it tells you what to press on the heater or the dashboard.
 
-With --allow-control --token TOKEN the tool sends only documented API v2 commands:
-POST /api/v2/command (power_on at the scenario target, off) and POST /api/v2/heartbeat
-for its own lease. It never changes a setting, a calibration or a safety limit, and
-never clears a fault. While its POWER_ON can be active, each exit path (end, error,
-Ctrl-C, SIGTERM, SIGHUP) sends OFF and checks that the relay is off.
+With --allow-control and --token-file FILE (or --token TOKEN) the tool sends only
+documented API v2 commands: POST /api/v2/command (power_on at the scenario target, off)
+and POST /api/v2/heartbeat for its own lease. An accepted power_on also stores its
+target as params.manual_target_c on the device (docs/api-v2.md); the front-panel On
+button then uses that target. The tool never changes a setting, a calibration or a
+safety limit, and never clears a fault. It sends OFF only to its own heat. While its
+POWER_ON can be active, each exit path (end, error, Ctrl-C, SIGTERM, SIGHUP) sends OFF
+and checks that the relay is off. Signals are ignored while that OFF runs.
+Before heat, the tool compares --mains-v with --rated-v and refuses a mismatch.
 
 Output: CAPTURES_DIR/YYYYmmddTHHMMSSZ-SCENARIO/ (see tools/dbcapture_common.py).
 Then run: python3 tools/analyze_capture.py THAT_DIR
@@ -33,6 +37,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -44,6 +49,9 @@ import dbcapture_common as common  # noqa: E402
 TOOL_VERSION = "1"
 ACTOR = {"kind": "web", "id": "capture-tool"}
 MIN_TARGET_C, MAX_TARGET_C = 30.0, 60.0     # tool ceiling, below the 70 C firmware cap
+MAINS_TOLERANCE = 0.15                      # mains vs rated voltage
+STOP_SIGNALS = tuple(s for s in (getattr(signal, n, None) for n in ("SIGINT", "SIGTERM", "SIGHUP"))
+                     if s is not None)
 SCENARIOS = {
     #              rate Hz, metrics s, duration/max s
     "idle":       (2.0, 15.0, 1800.0),
@@ -61,6 +69,11 @@ PROMPTS = {
     "cooldown": "The capture records the cooldown after heat. Do not open the door.",
     "soak": "Long capture at a low rate. Leave the heater in its normal use.",
 }
+
+
+DONE_REASONS = ("duration reached", "first heat recorded", "hold time reached",
+                "the mode changed to off", "cool and fan off", "maximum duration reached",
+                "maximum duration reached (target not reached)")
 
 
 class Abort(Exception):
@@ -143,7 +156,11 @@ class Capturer:
         self.metrics_ok = True
         self.armed = False           # our POWER_ON can be active
         self.lease = None
-        self.next_beat, self.beat_period = 0.0, 2.0
+        self.beat_period = 2.0
+        self.lease_lock = threading.Lock()
+        self.beat_stop = threading.Event()
+        self.beat_thread = None
+        self.loop_alive = 0.0        # time.monotonic() of the last main-loop pass
         self.boot_id = None
         self.stop_reason = None
         self.hot_since = None
@@ -241,17 +258,43 @@ class Capturer:
                 self.event("error", f"metrics: {e}")
         return st
 
-    def beat(self):
-        if not self.lease or self.now() < self.next_beat:
-            return
-        self.next_beat = self.now() + self.beat_period
-        try:
-            status, data = self.c.heartbeat(self.lease)
-        except OSError:
-            return
-        if status != 200 or not data.get("ok"):
-            self.event("warn", f"heartbeat refused ({data.get('error') or status}): the lease ended")
+    def _beat_loop(self, client):
+        """Heartbeat thread. The state and /metrics GETs cannot delay it. If the main loop
+        stops for more than two periods, the thread stops too: then the lease expires and
+        the firmware comms watchdog stops the heat."""
+        while not self.beat_stop.wait(self.beat_period):
+            with self.lease_lock:
+                lease = self.lease
+            if not lease:
+                return
+            if time.monotonic() - self.loop_alive > 2 * self.beat_period + 1.0:
+                continue
+            try:
+                status, data = client.heartbeat(lease)
+            except OSError:
+                continue
+            if status != 200 or not data.get("ok"):
+                with self.lease_lock:
+                    if self.lease == lease:
+                        self.lease = None
+                self.event("warn", f"heartbeat refused ({data.get('error') or status}): the lease ended")
+                return
+
+    def start_beat(self, lease, ttl_s):
+        self.beat_period = max(0.5, min(2.0, ttl_s / 4))
+        with self.lease_lock:
+            self.lease = lease
+        self.loop_alive = time.monotonic()
+        self.beat_stop.clear()
+        client = Client(self.a.host, self.a.token, timeout=max(0.5, min(2.0, ttl_s / 5)))
+        self.beat_thread = threading.Thread(target=self._beat_loop, args=(client,),
+                                            name="heartbeat", daemon=True)
+        self.beat_thread.start()
+
+    def stop_beat(self):
+        with self.lease_lock:
             self.lease = None
+        self.beat_stop.set()
 
     def guard(self, st):
         """Tool-side guard while armed. It can only stop heat."""
@@ -278,7 +321,7 @@ class Capturer:
         """Sample until cond(state, t) is true or max_s passes. Return the stop reason."""
         start = self.now()
         while True:
-            self.beat()
+            self.loop_alive = time.monotonic()
             st = self.sample()
             if st is not None:
                 g = self.guard(st)
@@ -289,13 +332,22 @@ class Capturer:
                     return "condition"
             if self.now() - start >= max_s:
                 return "time"
-            wait = min(self.next_sample, self.next_metrics if self.metrics_ok else 1e9,
-                       self.next_beat if self.lease else 1e9) - self.now()
+            wait = min(self.next_sample, self.next_metrics if self.metrics_ok else 1e9) - self.now()
             time.sleep(max(0.01, min(wait, 0.5)))
 
     # ---- control (only with --allow-control) ---------------------------------
 
+    def check_mains(self):
+        mv, rv = self.a.mains_v, self.a.rated_v
+        if mv is None or rv is None:
+            self.event("warn", "no --mains-v and --rated-v: the tool cannot compare the mains with the label")
+            return
+        if abs(mv - rv) / rv > MAINS_TOLERANCE and not self.a.allow_mains_mismatch:
+            raise Abort(f"mains {mv:.0f} V does not agree with the rated {rv:.0f} V. The fan and the PTC "
+                        "do not work as designed. Use --allow-mains-mismatch only after a review.")
+
     def precheck(self):
+        self.check_mains()
         st = self.c.get_json("/api/v2/state")
         settings = self.c.get_json("/settings") or {}
         if not st:
@@ -328,10 +380,8 @@ class Capturer:
         if status != 200 or not r.get("ok"):
             self.armed = False
             raise Abort(f"power_on refused: {r.get('error') or status}")
-        self.lease = r.get("lease_id")
         ttl = (_g(r, "state", "config", "comms_ms") or 300000) / 1000.0
-        self.beat_period = max(0.5, min(2.0, ttl / 4))
-        self.next_beat = self.now() + self.beat_period
+        self.start_beat(r.get("lease_id"), ttl)
         self.event("command", f"power_on target {self.a.target:.0f} C")
 
     def disarm_other(self, st):
@@ -339,36 +389,53 @@ class Capturer:
         owner = _g(st, "control", "lease", "owner")
         if self.armed and st.get("mode") != "off" and owner and owner != ACTOR["id"]:
             self.armed = False
-            self.lease = None
+            self.stop_beat()
             self.event("warn", f"another controller has the heater (owner {owner}). The tool does "
                        "not send OFF. Watch the heater.")
 
     def safe_off(self):
-        """Never raises. Used on each exit path while armed."""
+        """Never raises. Used on each exit path while armed. Stop signals are ignored while it runs,
+        so a second Ctrl-C, SIGTERM or SIGHUP cannot stop it before OFF is sent."""
         if not self.armed:
             return True
-        self.lease = None
-        for _ in range(3):
+        old = {}
+        if threading.current_thread() is threading.main_thread():
+            for sig in STOP_SIGNALS:
+                try:
+                    old[sig] = signal.signal(sig, signal.SIG_IGN)
+                except (ValueError, OSError):
+                    pass
+        try:
+            return self._off_and_check()
+        finally:
+            for sig, h in old.items():
+                signal.signal(sig, h)
+
+    def _off_and_check(self):
+        self.stop_beat()
+        sent = False
+        for _ in range(5):
             try:
                 status, r = self.c.command("off")
                 if status == 200 and r.get("ok"):
                     self.event("command", "off")
+                    sent = True
                     break
-            except OSError:
+            except BaseException:  # noqa: BLE001 - nothing may stop the OFF
                 pass
             time.sleep(0.25)
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             try:
                 st = self.c.get_json("/api/v2/state")
-            except OSError:
+            except BaseException:  # noqa: BLE001
                 st = None
             if st and not _g(st, "heater", "output") and st.get("mode") == "off":
                 self.armed = False
                 return True
             time.sleep(0.25)
         self.say("\n!!! The heater did not confirm OFF. Switch the heater off at the mains NOW. !!!")
-        self.event("error", "OFF not confirmed")
+        self.event("error", "OFF not confirmed" + ("" if sent else " (OFF not accepted)"))
         return False
 
     def stop_heat(self, why):
@@ -443,13 +510,13 @@ class Capturer:
         return "hold time reached" if reached else "the mode changed to off"
 
     def scenario_cooldown(self):
+        if self.last is None:
+            self.run_until(lambda s, t: True, 10.0, "first sample")
         st = self.last or {}
         if _g(st, "heater", "output") or st.get("mode") not in ("off", None):
-            if self.a.allow_control:
-                self.armed = True       # OFF of a heat we did not start: allowed, always safer
-                self.safe_off()
-            else:
-                self.stop_heat("cooldown capture")
+            # The tool sends OFF only to its own heat (stop_heat). Another heat (a print in AUTO,
+            # Klipper, a button) belongs to the operator: the tool asks for it.
+            self.stop_heat("cooldown capture")
         quiet = {}
 
         def done(s, t):
@@ -517,7 +584,12 @@ def parse_args(argv):
     p.add_argument("--wait", type=float, default=600.0, help="seconds to wait for heat to start")
     p.add_argument("--allow-control", action="store_true",
                    help="let the tool send power_on/off and its heartbeat (needs --token)")
-    p.add_argument("--token", default=None, help="control token (only with --allow-control)")
+    p.add_argument("--token", default=None,
+                   help="control token (only with --allow-control). Prefer --token-file: a command "
+                        "line is visible to other users")
+    p.add_argument("--token-file", default=None, help="file that holds the control token")
+    p.add_argument("--allow-mains-mismatch", action="store_true",
+                   help="heat although --mains-v and --rated-v do not agree")
     p.add_argument("--yes", action="store_true", help="do not ask before power_on")
     a = p.parse_args(argv)
     rate, mevery, dur = SCENARIOS[a.scenario]
@@ -530,8 +602,18 @@ def parse_args(argv):
         p.error("--rate must be in (0, 10]")
     if not MIN_TARGET_C <= a.target <= MAX_TARGET_C:
         p.error(f"--target must be {MIN_TARGET_C:.0f}-{MAX_TARGET_C:.0f} C")
+    if a.token_file:
+        if a.token:
+            p.error("give --token or --token-file, not both")
+        try:
+            with open(a.token_file) as f:
+                a.token = f.read().strip()
+        except OSError as e:
+            p.error(f"--token-file: {e}")
+        if not a.token:
+            p.error("--token-file is empty")
     if a.allow_control and not a.token:
-        p.error("--allow-control needs an explicit --token")
+        p.error("--allow-control needs an explicit --token-file or --token")
     if a.token and not a.allow_control:
         p.error("--token is used only with --allow-control (the capture is read-only otherwise)")
     return a
@@ -561,7 +643,7 @@ def main(argv=None, ask=input):
     finally:
         for s, h in old.items():
             signal.signal(s, h)
-    return 1 if "NOT CONFIRMED" in reason or reason.startswith("aborted") else 0
+    return 0 if reason in DONE_REASONS else 1
 
 
 if __name__ == "__main__":

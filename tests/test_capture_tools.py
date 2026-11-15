@@ -115,10 +115,16 @@ class PriorsTest(unittest.TestCase):
         self.assertGreater(p["ratio"], 82 / 33)                   # more than the Rref ratio 2.48
         text = " ".join(p["fits"])
         self.assertNotIn("wrong Rref: divider", text)            # 222 k is no board value
-        self.assertIn("mirror Rref", text)
+        self.assertNotIn("mirror Rref", text)                    # only one channel deviates
+        self.assertIn("not an Rref error", text)
         self.assertIn("R25 0.37", text)
         self.assertIn("parallel leak", text)
         self.assertIn("no chain error", " ".join(inv["channels"]["chamber"]["fits"]))
+
+    def test_one_channel_off_with_ambient_is_not_rref(self):
+        inv = priors.inverse(22.0, priors.display_c(22.0, 33, 82), 22.0, 33)
+        self.assertFalse(inv["both_channels_same_ratio"])
+        self.assertNotIn("wrong Rref: divider", " ".join(inv["channels"]["ptc"]["fits"]))
 
     def test_wrong_rref_fits(self):
         shown = priors.display_c(22.0, 33, 82)            # firmware 33 k on an 82 k divider
@@ -175,7 +181,16 @@ class FitTest(unittest.TestCase):
         self.assertAlmostEqual(f["tau_s"], tau, delta=0.1 * tau)
         self.assertAlmostEqual(f["theta_s"], theta, delta=2 * dt)
         t = analyze_capture.tune(f, 15.0)
-        self.assertGreater(t["simc_tight"]["kp"], t["simc_smooth"]["kp"])
+        self.assertGreaterEqual(t["simc_tight"]["kp"], t["simc_smooth"]["kp"])
+        for name in ("simc_tight", "simc_smooth"):
+            self.assertGreaterEqual(t[name]["tau_c_s"], f["tau_s"] / 3)
+        # tau_c >= tau/3 caps Kp at tau / (K (tau/3 + theta)) < 3 / K
+        self.assertLess(t["simc_tight"]["kp"], 3 / K)
+        f["tau_identifiable"] = True
+        f["r2"] = 0.999
+        self.assertTrue(analyze_capture.gains_usable(f))
+        f["r2"] = 0.95
+        self.assertFalse(analyze_capture.gains_usable(f))
 
 
 # ------------------------------------------------------------------- synthetic captures
@@ -216,6 +231,10 @@ class SyntheticAnalysisTest(unittest.TestCase):
         self.assertEqual(r["replay"]["unexplained"], 0)
         self.assertTrue(r["health"]["found"])
         self.assertFalse(r["health"]["flags"])
+        rows = {a: (b, c) for a, b, c in analyze_capture.numbers_table(r)}
+        self.assertFalse(r["step"]["fits"]["chamber_c"]["tau_identifiable"])
+        self.assertEqual(rows["PID gains"][0], "not given")          # 70 min is less than 3 tau
+        self.assertFalse(any(k.startswith("PID gains (SIMC") for k in rows))
         sg = r["first_heat"]["suggest"]
         self.assertGreaterEqual(sg["PB_FH_CROSS_RISE_DC"], sg["PB_FH_PASS_RISE_DC"])
         self.assertNotIn("FAIL", [lvl for lvl, _ in r["flags"]])
@@ -228,6 +247,8 @@ class SyntheticAnalysisTest(unittest.TestCase):
     def test_dead_element(self):
         _, r = self.res["dead_element"]
         self.assertEqual(r["first_heat"]["model"]["model_state"], "no_rise")
+        self.assertEqual(r["first_heat"]["at_12s"]["rule"], "wait")     # the firmware has no decision yet
+        self.assertEqual(r["first_heat"]["at_30s"]["rule"], "no_rise")
         self.assertLess(r["step"]["fits"]["chamber_c"]["K_c_per_duty"], 2.0)
         self.assertIn("NO_RISE", self.flags("dead_element"))
 
@@ -254,6 +275,25 @@ class SyntheticAnalysisTest(unittest.TestCase):
         self.assertTrue(r["cold"]["oscillation"])
         self.assertIn("issue #122", self.flags("ptc_offset"))
 
+    def test_stored_offsets_are_removed(self):
+        d = os.path.join(self.tmp.name, "normal-offset")
+        synth_capture.generate("normal", d, heat_s=600, cool_s=60)
+        cap = common.load_capture(d)
+        cap.header["calibration"] = {"chamber_offset_c": -1.0, "ptc_offset_c": 2.0}
+        for r in cap.rows:                       # the state reports calibrated values
+            r["chamber_c"] -= 1.0
+            r["ptc_c"] += 2.0
+        c = analyze_capture.section_cold(cap)
+        self.assertAlmostEqual(c["diff_median_c"], 0.0, delta=0.2)      # raw agreement
+        self.assertAlmostEqual(c["chamber_median_c"], 22.0, delta=0.2)
+        o = c["suggest_offsets"]                 # reference 22 C in the header
+        self.assertAlmostEqual(o["chamber_offset_c"], 0.0, delta=0.15)  # = -1 + (22 - 21)
+        self.assertAlmostEqual(o["ptc_offset_c"], 0.0, delta=0.15)      # = +2 + (22 - 24)
+        del cap.header["ambient_c"]
+        o = analyze_capture.section_cold(cap)["suggest_offsets"]
+        self.assertAlmostEqual(o["chamber_offset_c"], -1.0, delta=0.15)  # unchanged
+        self.assertAlmostEqual(o["ptc_offset_c"], -1.0, delta=0.15)      # PTC to calibrated chamber
+
     def test_report_and_expect_files(self):
         d = os.path.join(self.tmp.name, "normal")
         with contextlib.redirect_stdout(io.StringIO()):
@@ -262,7 +302,7 @@ class SyntheticAnalysisTest(unittest.TestCase):
         with open(os.path.join(d, "analysis.md")) as f:
             md = f.read()
         for part in ("## Priors", "## First heat (measured)", "## Cold agreement", "## Airflow",
-                     "## Step response", "## Control health", "## Replay", "PB_HEATER_PID_KP"):
+                     "## Step response", "## Control health", "## Replay", "PID gains"):
             self.assertIn(part, md)
         self.assertLess(md.index("## Priors"), md.index("## First heat (measured)"))
         with open(os.path.join(d, "analysis.json")) as f:
@@ -365,9 +405,16 @@ class MockDevice:
         self.last = time.monotonic()
         self.requests = []
         self.fan = 0
+        self.comms_ms = 300000
+        self.beat_at = None
+        self.beats = 0
+        self.metrics_delay = 0.0
 
     def advance(self):
         now = time.monotonic()
+        if self.lease and now - self.beat_at > self.comms_ms / 1000.0:
+            self.fault, self.reason = True, "Controller lease expired"
+            self.mode, self.lease = "off", None
         dt = (now - self.last) * self.SPEED
         self.last = now
         if self.mode == "power_on" and not self.fault:
@@ -386,7 +433,7 @@ class MockDevice:
             "api_version": 2, "device_id": "mock", "boot_id": "b" * 32, "firmware": "9.9.9-mock",
             "state_revision": self.rev, "mode": self.mode, "source": "web",
             "target": {"requested_c": self.target, "effective_c": self.target, "maximum_c": 70.0},
-            "config": {"max": 70.0, "max_abs": 70.0, "comms_ms": 300000},
+            "config": {"max": 70.0, "max_abs": 70.0, "comms_ms": self.comms_ms},
             "heater": {"demand": self.mode == "power_on", "output": self.output, "method": "bangbang"},
             "fan": {"requested_percent": self.fan, "effective_percent": self.fan, "reason": "heater"},
             "sensors": {"chamber": {"temperature_c": round(self.chamber, 1), "status": "ok"},
@@ -428,6 +475,12 @@ def make_handler(dev):
                 if self.path == "/api/v2/health":
                     return self.send(200, {"uptime_s": 100})
                 if self.path == "/metrics" and dev.metrics:
+                    if dev.metrics_delay:
+                        dev.lock.release()
+                        try:
+                            time.sleep(dev.metrics_delay)
+                        finally:
+                            dev.lock.acquire()
                     return self.send(200, "dragonbreath_uptime_seconds 100\n"
                                           "dragonbreath_control_ticks_late_total 0\n", "text/plain")
                 return self.send(404, {"error": "not_found"})
@@ -450,12 +503,15 @@ def make_handler(dev):
                         if body.get("expected_revision") != dev.rev:
                             return self.send(409, {"ok": False, "error": "revision_conflict"})
                         dev.mode, dev.target, dev.lease = "power_on", body["command"]["target_c"], "L" * 32
+                        dev.beat_at = time.monotonic()
                         dev.rev += 1
                         dev.advance()
                         return self.send(200, {"ok": True, "lease_id": dev.lease, "state": dev.state()})
                     return self.send(400, {"ok": False, "error": "invalid_command"})
                 if self.path == "/api/v2/heartbeat":
                     ok = body.get("lease_id") == dev.lease and dev.lease is not None
+                    if ok:
+                        dev.beat_at, dev.beats = time.monotonic(), dev.beats + 1
                     return self.send(200 if ok else 409, {"ok": ok} if ok else {"ok": False,
                                                                                 "error": "stale_lease"})
                 return self.send(404, {"error": "not_found"})
@@ -578,11 +634,102 @@ class CaptureToolTest(unittest.TestCase):
                                        "--yes")
         finally:
             capture.Capturer.sample = real
-        self.assertEqual(rc, 0, out)
+        self.assertEqual(rc, 1, out)                  # an interrupted capture is not a success
         names = [p[2]["command"]["name"] for p in self.posts() if p[1] == "/api/v2/command"]
         self.assertEqual(names, ["power_on", "off"])
         self.assertEqual(self.dev.mode, "off")
         self.assertEqual(common.load_capture(d).header["stop_reason"], "interrupted")
+
+    def test_interrupt_inside_off_still_sends_off(self):
+        """A second Ctrl-C (or SIGTERM) during the OFF must not stop the OFF."""
+        real_cmd = capture.Client.command
+        real_sample = capture.Capturer.sample
+        state = {"n": 0, "off_calls": 0}
+
+        def command(self_, name, revision=None, **args):
+            if name == "off":
+                state["off_calls"] += 1
+                if state["off_calls"] == 1:
+                    raise KeyboardInterrupt        # the second Ctrl-C, inside the first attempt
+            return real_cmd(self_, name, revision, **args)
+
+        def sample(self_):
+            state["n"] += 1
+            if state["n"] == 15:
+                raise KeyboardInterrupt            # the first Ctrl-C
+            return real_sample(self_)
+        capture.Client.command, capture.Capturer.sample = command, sample
+        try:
+            rc, out, d = self.run_tool("step", "--allow-control", "--token", TOKEN, "--rate", "10", "--yes")
+        finally:
+            capture.Client.command, capture.Capturer.sample = real_cmd, real_sample
+        self.assertEqual(rc, 1, out)
+        self.assertGreaterEqual(state["off_calls"], 2)
+        names = [p[2]["command"]["name"] for p in self.posts() if p[1] == "/api/v2/command"]
+        self.assertEqual(names, ["power_on", "off"])
+        self.assertEqual(self.dev.mode, "off")
+        self.assertFalse(self.dev.output)
+
+    def test_signals_are_ignored_during_off(self):
+        import signal as sig
+        seen = {}
+        real_cmd = capture.Client.command
+
+        def command(self_, name, revision=None, **args):
+            if name == "off":
+                seen["int"] = sig.getsignal(sig.SIGINT)
+                seen["term"] = sig.getsignal(sig.SIGTERM)
+            return real_cmd(self_, name, revision, **args)
+        capture.Client.command = command
+        try:
+            rc, out, d = self.run_tool("first-heat", "--allow-control", "--token", TOKEN, "--rate", "10",
+                                       "--baseline", "0.3", "--heat-seconds", "0.3", "--tail", "0.2")
+        finally:
+            capture.Client.command = real_cmd
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(seen["int"], sig.SIG_IGN)
+        self.assertEqual(seen["term"], sig.SIG_IGN)
+        self.assertNotEqual(sig.getsignal(sig.SIGINT), sig.SIG_IGN)
+
+    def test_heartbeat_is_not_delayed_by_slow_gets(self):
+        self.dev.comms_ms = 2000                     # lease TTL 2 s, heartbeat each 0.5 s
+        self.dev.metrics_delay = 1.2                 # each /metrics GET blocks the main loop 1.2 s
+        rc, out, d = self.run_tool("first-heat", "--allow-control", "--token", TOKEN, "--rate", "10",
+                                   "--metrics-every", "0.2", "--baseline", "0.2", "--heat-seconds", "4",
+                                   "--tail", "0.2")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.dev.fault, self.dev.reason)
+        self.assertGreaterEqual(self.dev.beats, 5)
+
+    def test_cooldown_never_stops_foreign_heat(self):
+        with self.dev.lock:
+            self.dev.mode, self.dev.target = "power_on", 40.0     # a print in AUTO, or a button
+        def operator():
+            time.sleep(1.0)
+            with self.dev.lock:
+                self.dev.mode, self.dev.target = "off", 0.0
+        threading.Thread(target=operator, daemon=True).start()
+        rc, out, d = self.run_tool("cooldown", "--allow-control", "--token", TOKEN, "--rate", "10",
+                                   "--duration", "1.5")
+        self.assertEqual(self.posts(), [])
+        self.assertIn("stop the heat now", out)
+
+    def test_mains_mismatch_refuses_heat(self):
+        rc, out, d = self.run_tool("step", "--allow-control", "--token", TOKEN, "--yes", "--rate", "10",
+                                   "--mains-v", "120", "--rated-v", "230")
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.posts(), [])
+        self.assertIn("does not agree", common.load_capture(d).header["stop_reason"])
+
+    def test_token_file(self):
+        p = os.path.join(self.tmp.name, "..", f"tok-{os.getpid()}")
+        with open(p, "w") as f:
+            f.write(TOKEN + "\n")
+        try:
+            a = capture.parse_args([self.host, "step", "--allow-control", "--token-file", p])
+        finally:
+            os.unlink(p)
+        self.assertEqual(a.token, TOKEN)
 
     def test_fault_latched_refuses_control(self):
         self.dev.fault, self.dev.reason = True, "PTC element over-temp"

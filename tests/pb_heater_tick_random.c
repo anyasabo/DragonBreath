@@ -70,9 +70,17 @@
 typedef enum { SM_NORMAL, SM_NOISY, SM_STUCK, SM_DROPOUT, SM_JUMP, SM__COUNT } sensor_mode_t;
 static const char *const k_mode_name[SM__COUNT] = { "normal", "noisy", "stuck", "dropout", "jump" };
 
-// Plant faults that the first-heat check must find.
-typedef enum { PLANT_NORMAL, PLANT_CROSSED, PLANT_DEAD, PLANT_DETACHED, PLANT__COUNT } plant_t;
-static const char *const k_plant_name[PLANT__COUNT] = { "normal", "crossed", "dead", "detached_ptc" };
+// Plant faults that the first-heat check must find. In each plant the chamber
+// bead sits in the heater's outlet air: it reads tc + eta_ch x (te - tc). The
+// PTC thermistor on the element reads te through a first-order lag (tau_s).
+//   CROSSED   the chamber channel reads the element, the PTC channel the bead
+//   DEAD      no element power
+//   DETACHED  the PTC thermistor came off and reads the room (ta)
+//   AIR       the PTC thermistor came off and hangs in the outlet air (eta_p)
+typedef enum { PLANT_NORMAL, PLANT_CROSSED, PLANT_DEAD, PLANT_DETACHED, PLANT_AIR, PLANT__COUNT } plant_t;
+static const char *const k_plant_name[PLANT__COUNT] = {
+    "normal", "crossed", "dead", "detached_ptc", "ptc_in_air",
+};
 
 typedef struct {
     uint64_t seed;
@@ -85,6 +93,9 @@ typedef struct {
     // element power that falls as the element gets hot, chamber loss to ambient
     // that a fan increases. The parameters are random over a wide range.
     double te, tc, ta;
+    double ts;                     // the PTC thermistor (te through a first-order lag)
+    double tau_s;                  // its time constant, s
+    double eta_ch, eta_p;          // outlet-air coupling of the chamber bead / a loose PTC
     double pmax_w, ce_j_k, cc_j_k, kec_w_k, kca_w_k, fan_boost, knee_c, knee_w;
     bool fan;
 
@@ -137,6 +148,10 @@ typedef struct {
     int fh_plant_at_open;
     long fh_windows, fh_pass, fh_roles, fh_norise, fh_uncertain, fh_hazard_aborts, fh_timeouts;
     long fh_clean_normal, fh_clean_fault; // plant-level assertions that ran
+    long fh_detect_crossed, fh_detect_dead, fh_detect_air;   // detection assertions that ran
+    double fh_te0, fh_te_max;      // true element temperature at the open, and its peak
+    double fh_ts0, fh_ts_max;      // the same for the PTC thermistor (lagged element)
+    double fh_b0, fh_b_max;        // the same for the outlet air at the chamber bead
 } world_t;
 
 static world_t *W;
@@ -229,15 +244,18 @@ static void model_advance(double dt_s)
         double q_ca = W->kca_w_k * (1.0 + (W->fan ? W->fan_boost : 0.0)) * (W->tc - W->ta);
         W->te += step * (p - q_ec) / W->ce_j_k;
         W->tc += step * (q_ec - q_ca) / W->cc_j_k;
+        W->ts += step * (W->te - W->ts) / W->tau_s;
     }
 }
 
 static void update_sensors(void)
 {
     double truth[2];
-    truth[PB_NTC_CHAMBER] = W->plant == PLANT_CROSSED ? W->te : W->tc;
-    truth[PB_NTC_PTC] = W->plant == PLANT_CROSSED ? W->tc
-                      : W->plant == PLANT_DETACHED ? W->ta : W->te;
+    const double bead = W->tc + W->eta_ch * (W->te - W->tc);   // outlet air at the bead
+    truth[PB_NTC_CHAMBER] = W->plant == PLANT_CROSSED ? W->ts : bead;
+    truth[PB_NTC_PTC] = W->plant == PLANT_CROSSED ? bead
+                      : W->plant == PLANT_DETACHED ? W->ta
+                      : W->plant == PLANT_AIR ? W->tc + W->eta_p * (W->te - W->tc) : W->ts;
     for (int ch = 0; ch < 2; ++ch) {
         float v = (float)truth[ch] + W->bias[ch];
         int st = PB_NTC_OK;
@@ -375,20 +393,44 @@ static bool plant_supported(void)
 // Plant-level assertions on a result of a clean window (no plant or sensor
 // change since the open, both sensors in the normal mode):
 //   - a normal, supported plant never latches;
-//   - a dead element, a detached PTC thermistor or crossed leads never PASS.
+//   - a dead element, a PTC in the room or crossed leads never PASS;
+//   - detection: a dead element or a PTC in the room latches (the check
+//     decided, so the heat was continuous). Crossed leads latch if the true
+//     element rise is clearly more than 2 x the true outlet-air rise. A PTC in the outlet
+//     air that is not nearer to the element than the bead never passes.
 static void fh_result(int state)
 {
     W->fh_streak = state == PB_FH_UNCERTAIN ? W->fh_streak + 1 : 0;
     if (!W->fh_clean) return;
-    if (W->fh_plant_at_open == PLANT_NORMAL && W->fh_supported) {
+    const bool latched = state == PB_FH_WRONG_ROLES || state == PB_FH_NO_RISE;
+    const int plant = W->fh_plant_at_open;
+    if (plant == PLANT_NORMAL && W->fh_supported) {
         W->fh_clean_normal++;
-        RCHECK(state != PB_FH_WRONG_ROLES && state != PB_FH_NO_RISE,
-               "a supported normal plant latched first-heat %d (pmax %.0f W, kec %.1f W/K, ce %.0f J/K, "
-               "knee %.0f C)", state, W->pmax_w, W->kec_w_k, W->ce_j_k, W->knee_c);
-    } else if (W->fh_plant_at_open != PLANT_NORMAL) {
+        RCHECK(!latched, "a supported normal plant latched first-heat %d (pmax %.0f W, kec %.1f W/K, "
+               "ce %.0f J/K, knee %.0f C, tau_s %.1f s, eta_ch %.2f)", state, W->pmax_w, W->kec_w_k,
+               W->ce_j_k, W->knee_c, W->tau_s, W->eta_ch);
+    }
+    if (plant == PLANT_CROSSED || plant == PLANT_DEAD || plant == PLANT_DETACHED) {
         W->fh_clean_fault++;
-        RCHECK(state != PB_FH_PASS, "a %s plant passed the first-heat check",
-               k_plant_name[W->fh_plant_at_open]);
+        RCHECK(state != PB_FH_PASS, "a %s plant passed the first-heat check", k_plant_name[plant]);
+    }
+    if (plant == PLANT_DEAD || plant == PLANT_DETACHED) {
+        W->fh_detect_dead++;
+        RCHECK(latched, "a %s plant did not latch (first-heat %d)", k_plant_name[plant], state);
+    }
+    // Crossed: the chamber channel sees the true thermistor rise r, the PTC
+    // channel the true outlet-air rise b. If r >= 2 b + 2 C + a 1 C margin (for
+    // the median start, the one-sample peak lag and the rounding), it latches.
+    const double r = W->fh_ts_max - W->fh_ts0, b = W->fh_b_max - W->fh_b0;
+    if (plant == PLANT_CROSSED && r >= 2.0 * b + 3.0) {
+        W->fh_detect_crossed++;
+        RCHECK(latched, "crossed leads (eta_ch %.2f, true rises: element sensor +%.1f C, outlet air "
+               "+%.1f C) did not latch (first-heat %d)", W->eta_ch, r, b, state);
+    }
+    if (plant == PLANT_AIR && W->eta_p <= W->eta_ch) {
+        W->fh_detect_air++;
+        RCHECK(state != PB_FH_PASS, "a PTC in the outlet air (eta_p %.2f <= eta_ch %.2f) passed",
+               W->eta_p, W->eta_ch);
     }
 }
 
@@ -513,6 +555,12 @@ static void one_tick(void)
     const float reg = ext ? W->ext_ctrl : ch;
     const bool relay_was_on = relay() == 1;
 
+    if (fh_open()) {
+        double bead = W->tc + W->eta_ch * (W->te - W->tc);
+        if (W->te > W->fh_te_max) W->fh_te_max = W->te;
+        if (W->ts > W->fh_ts_max) W->fh_ts_max = W->ts;
+        if (bead > W->fh_b_max) W->fh_b_max = bead;
+    }
     // First-heat, in the order of the tick.
     if (W->fh_rerun) {
         W->fh_rerun = false;
@@ -600,6 +648,9 @@ static void one_tick(void)
             W->fh_clean = W->mode[PB_NTC_CHAMBER] == SM_NORMAL && W->mode[PB_NTC_PTC] == SM_NORMAL;
             W->fh_supported = plant_supported();
             W->fh_plant_at_open = W->plant;
+            W->fh_te0 = W->fh_te_max = W->te;
+            W->fh_ts0 = W->fh_ts_max = W->ts;
+            W->fh_b0 = W->fh_b_max = W->tc + W->eta_ch * (W->te - W->tc);
         }
     }
     check_first_heat();
@@ -892,6 +943,7 @@ static void act_teleport(void)
     W->fh_clean = false;                       // the plant or a sensor changes
     W->te = rnd_f(-20.0, 130.0);
     W->tc = rnd_f(-20.0, W->te > 100.0 ? 100.0 : W->te);
+    W->ts = W->te;
 }
 
 static void act_near_limits(void)
@@ -900,6 +952,7 @@ static void act_near_limits(void)
     // Put the true temperatures close to the foldback and cutoff thresholds.
     W->te = rnd_f(94.0, 108.0);
     W->tc = rnd_f(60.0, 88.0);
+    W->ts = W->te;
     if (chance(0.5)) {
         W->ext_ctrl = (float)rnd_f(30.0, 69.0);
         pb_heater_set_control_chamber_c(W->ext_ctrl);
@@ -910,7 +963,7 @@ static void act_cooldown(void)
 {
     W->fh_clean = false;                       // the plant or a sensor changes
     // A long time with the relay off: both nodes are at ambient again.
-    W->te = W->tc = W->ta;
+    W->te = W->tc = W->ts = W->ta;
 }
 
 static void act_advance(void)
@@ -926,7 +979,7 @@ static void act_operator(void)
 {
     W->fh_clean = false;                       // the plant or a sensor changes
     // What a user does after a fault: wait for it to cool, clear, start again.
-    W->te = W->tc = W->ta;
+    W->te = W->tc = W->ts = W->ta;
     for (int ch = 0; ch < 2; ++ch) W->mode[ch] = SM_NORMAL;
     W->controller_present = true;
     act_link_alive_impl();
@@ -1110,6 +1163,7 @@ typedef struct {
     long trips[PB_FAULT__COUNT];
     long fh_windows, fh_pass, fh_crossed, fh_norise, fh_uncertain, fh_hazard_aborts;
     long fh_clean_normal, fh_clean_fault;
+    long fh_detect_crossed, fh_detect_dead, fh_detect_air;
 } totals_t;
 
 // Random plant parameters over a wide range. supported=true draws them only
@@ -1117,7 +1171,10 @@ typedef struct {
 static void random_plant(bool supported)
 {
     W->ta = rnd_f(5.0, 45.0);
-    W->te = W->tc = W->ta;
+    W->te = W->tc = W->ts = W->ta;
+    W->tau_s = rnd_f(0.5, 5.0);                // a thermistor on the element
+    W->eta_ch = rnd_f(0.2, 0.6);
+    W->eta_p = rnd_f(0.1, 0.9);
     W->pmax_w = supported ? rnd_f(150.0, 400.0) : rnd_f(50.0, 400.0);
     W->ce_j_k = rnd_f(100.0, 800.0);
     W->cc_j_k = rnd_f(500.0, 8000.0);
@@ -1172,7 +1229,7 @@ static bool run_sweep(uint64_t seed, totals_t *tot)
     env_reset();
     env->rref_kohm = chance(0.5) ? 82 : 33;
     random_plant(chance(0.6));
-    W->plant = chance(0.5) ? PLANT_NORMAL : (int)rnd_u(PLANT__COUNT);
+    W->plant = chance(0.4) ? PLANT_NORMAL : (int)rnd_u(PLANT__COUNT);
     if (env_run_code(sweep_child) != 0) {
         fprintf(stderr, "FAIL: plant sweep seed %" PRIu64 " (rerun: PB_HEATER_SWEEP_SEED=%" PRIu64 ")\n",
                 seed, seed);
@@ -1180,6 +1237,9 @@ static bool run_sweep(uint64_t seed, totals_t *tot)
     }
     tot->fh_clean_normal += W->fh_clean_normal;
     tot->fh_clean_fault += W->fh_clean_fault;
+    tot->fh_detect_crossed += W->fh_detect_crossed;
+    tot->fh_detect_dead += W->fh_detect_dead;
+    tot->fh_detect_air += W->fh_detect_air;
     tot->fh_windows += W->fh_windows;
     return true;
 }
@@ -1302,10 +1362,13 @@ bool heater_random_test(void)
         for (long i = 0; i < nsw; ++i) ok &= run_sweep(0x5EE00001ull + (uint64_t)i, &sw);
     }
     printf("plant sweep: %ld runs, windows=%ld, clean windows: supported normal plant=%ld "
-           "(none latched), faulty plant=%ld (none passed)\n",
-           (one_sweep && *one_sweep) ? 1 : nsw, sw.fh_windows, sw.fh_clean_normal, sw.fh_clean_fault);
+           "(none latched), faulty plant=%ld (none passed), detected: dead/room PTC=%ld "
+           "crossed=%ld, PTC in air not passed=%ld\n",
+           (one_sweep && *one_sweep) ? 1 : nsw, sw.fh_windows, sw.fh_clean_normal, sw.fh_clean_fault,
+           sw.fh_detect_dead, sw.fh_detect_crossed, sw.fh_detect_air);
     if (ok && !(one_sweep && *one_sweep) && !getenv("PB_HEATER_SWEEPS") &&
-        (sw.fh_clean_normal < 200 || sw.fh_clean_fault < 100)) {
+        (sw.fh_clean_normal < 150 || sw.fh_clean_fault < 100 || sw.fh_detect_dead < 30 ||
+         sw.fh_detect_crossed < 10 || sw.fh_detect_air < 10)) {
         fprintf(stderr, "plant sweep coverage too low\n");
         ok = false;
     }

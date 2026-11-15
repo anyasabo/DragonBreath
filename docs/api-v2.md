@@ -108,12 +108,15 @@ The complete snapshot, not locally remembered intent, is the source of truth:
   },
   "first_heat": {
     "state": "pass",
-    "ptc_rise_c": 23.0,
-    "ch_rise_c": 2.3,
+    "ptc_rise_c": 22.0,
+    "ch_rise_c": 2.2,
     "on_ms": 12000,
     "stored": "pass",
     "stock_hint": "none",
-    "enforced": true
+    "restarts": 0,
+    "skipped": 0,
+    "enforced": true,
+    "advice": null
   },
   "safety": {
     "fault_latched": false,
@@ -124,20 +127,26 @@ The complete snapshot, not locally remembered intent, is the source of truth:
 ```
 
 `first_heat` reports the first-heat check (see `docs/SAFETY.md`). `state` is the
-state of this session: `idle`, `armed`, `eval`, `pass`, `crossed`, `no_rise` or
-`uncertain`. `uncertain` means that both channels rose. It reports only and does
-not latch. The next heat runs the check again.
+state of this session: `idle`, `armed`, `eval`, `pass`, `wrong_roles`, `no_rise`
+or `uncertain`. `uncertain` means that both channels rose by similar amounts. It
+reports only and does not latch. The next heat runs the check again.
 In `armed`, a window is open with less than 12 s of relay ON time. In `eval`, a
-window is open and a decision can come in each tick. `ptc_rise_c` and `ch_rise_c` are the rises of the open or last
-window in °C (one decimal). After a boot they are the stored rises. `on_ms` is
-the relay ON time of the open or last window. `stored` is the result in NVS:
-`unknown`, `pass`, `crossed` or `no_rise`. A stored result counts only for the
-thermistor mapping and offsets that it was measured with. `stock_hint` is the
-stock firmware's `ntc_bit` key: `none` (no key), `unknown`, `crossed`, `normal`
-or `invalid`. It is a hint only. `enforced` is `false` on a safe dev-board
-build: the check then reports only and never latches. A `crossed` or `no_rise`
-result latches the heater off with the `safety.reason`
-`thermistors crossed (first-heat check)` or `heater no-rise (first-heat check)`.
+window is open and a decision can come in each tick. `ptc_rise_c` and
+`ch_rise_c` are the rises of the open or last window in °C (one decimal). After
+a boot they are the stored rises. `on_ms` is the relay ON time of the open or
+last window. `stored` is the result in NVS: `unknown`, `pass`, `wrong_roles` or
+`no_rise`. A stored result counts only for the thermistor mapping and offsets
+that it was measured with. `stock_hint` is the stock firmware's `ntc_bit` key:
+`none` (no key), `unknown`, `crossed`, `normal` or `invalid`. It is a hint only.
+`restarts` counts the windows of this boot that closed without a result (too
+little ON time, or an offset change). `skipped` counts the relay-on edges of
+this boot with an element that was already warm (no window).
+`enforced` is `false` on a safe dev-board build and on a build with
+`CONFIG_PB_FIRST_HEAT_REPORT_ONLY=y`: the check then reports only and never latches.
+A `wrong_roles` or `no_rise` result latches the heater off with the
+`safety.reason` `sensor roles wrong or PTC sensor not on element (first-heat check)`
+or `heater no-rise (first-heat check)`. If a `wrong_roles` result is stored,
+`advice` tells the user to check the plugs before a swap. Else it is `null`.
 
 `heater.commanded_duty` is the normalized duty admitted to the 10-second SSR
 window after the PID approach policy and non-latching thermal governors. It is
@@ -322,11 +331,13 @@ These predate/sit beside the versioned control surface and are stable:
   `first_heat_rerun=1` forgets the stored first-heat result. The next heat runs
   the check again. If the reset cannot be saved, the response is HTTP 500, but
   the check still runs again in this session.
-  `first_heat_apply_swap=1` stages the swap that a stored `crossed` result
-  suggests: the opposite of the active mapping. It applies after a reboot. The
-  reboot also resets the stored result, so the next heat checks the new
-  mapping. Without a stored `crossed` result the response is HTTP 409. The
-  firmware never applies a swap by itself.
+  `first_heat_apply_swap=1` stages the swap for a stored `wrong_roles` result:
+  the opposite of the active mapping. Check the plugs first. If the chamber and
+  PTC plugs are crossed, the swap is right. A `wrong_roles` result can also
+  mean a PTC sensor that is not on the element. A swap does not repair that. The
+  swap applies after a reboot. The reboot also resets the stored result, so the
+  next heat checks the new mapping. Without a stored `wrong_roles` result the
+  response is HTTP 409. The firmware never applies a swap by itself.
 - `GET /api/v2/calibration` — the per-channel temperature calibration offsets plus
   their bounds and the live readings:
   `{"api_version":2,"chamber_offset_c","ptc_offset_c","min":-5,"max":5,"chamber_c","ptc_c","chamber_raw_c","ptc_raw_c"}`.

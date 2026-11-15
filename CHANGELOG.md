@@ -11,18 +11,21 @@ below into the GitHub Release notes.
 - **First-heat check.** Like the stock firmware, the first heat after each boot
   checks the thermistor roles and the element, until a pass is stored. After
   12 s of relay ON time the PTC must rise 3 °C and more than twice the chamber.
-  If the PTC stays below 3 °C for 30 s of ON time, the heater latches off. If
-  the chamber rose 5 °C and 3 °C more than the PTC, the cause is
-  `thermistors crossed (first-heat check)`. In other cases the cause is
-  `heater no-rise (first-heat check)`. If both
-  channels rose, the result is `uncertain`: it reports only. Both
-  latches persist and clear like a hazard trip. Unlike stock, the firmware never
-  swaps the channels: `POST /settings?first_heat_apply_swap=1` stages the
-  suggested swap, `first_heat_rerun=1` runs the check again. The result shows in
-  `first_heat` of `/api/v2/state` and on `/diag`. The stock `ntc_bit` key shows
-  as a hint only. A safe dev-board build reports only. The thresholds are
-  provisional until a first-heat capture of an 82 kΩ and a 33 kΩ board exists.
-  See `docs/SAFETY.md`.
+  If the chamber rises 2 °C more than twice the PTC, the heater latches off with
+  `sensor roles wrong or PTC sensor not on element (first-heat check)`. If the
+  PTC rises less than 2 °C in 30 s of ON time, the heater latches off with
+  `heater no-rise (first-heat check)`. A failed result needs mostly continuous
+  heat. If both channels rose by similar amounts, the result is `uncertain`: it
+  reports only. A warm element opens no window. Both latches persist and clear
+  like a hazard trip. Unlike stock, the firmware never swaps the channels. If the
+  plugs are crossed, `POST /settings?first_heat_apply_swap=1` stages the swap.
+  `first_heat_rerun=1` runs the check again. The result shows in `first_heat`
+  of `/api/v2/state` and on `/diag`. The stock `ntc_bit` key shows as a hint
+  only. The supported range is ≥ 150 W element power: a 230 V unit on 120 V
+  mains is out of spec. `CONFIG_PB_FIRST_HEAT_REPORT_ONLY=y` builds a report-only
+  firmware for recovery from a false trip. A safe dev-board build reports only.
+  The thresholds are provisional until a first-heat capture of an 82 kΩ and a
+  33 kΩ board exists. See `docs/SAFETY.md`.
 
 ### Fixed
 - **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or

@@ -74,62 +74,86 @@ of a single two-wire thermistor does not require this option.
 
 ## First-heat check (thermistor roles and element)
 The stock firmware checks the first heat: if the chamber reading rises first,
-it swaps the two channels silently. DragonBreath does the same check, but it
+it swaps the two channels silently. DragonBreath does a similar check, but it
 never swaps. It latches the heater off and tells the user.
 
 How it works (`pb_heater_tick()`, after the hazard checks above):
-- When the relay first turns on in a heat, the tick records the PTC and chamber
-  readings. If the PTC reads 70 °C or more, no window opens (a hot element cannot
-  show a clear rise).
+- A relay OFF→ON edge opens a window. If the element is already warm (PTC
+  reading ≥ 70 °C, or ≥ the chamber reading + 10 °C), no window opens. Such an
+  element can be at its equilibrium and cannot rise.
+- The start reading of each channel is the median of its first three readings,
+  so one glitch cannot make a false start.
 - The window counts **relay ON time only**. The rise of each channel is its peak
   minus its start reading, in integer tenths of a degree. The peak uses the lower
   of each two consecutive readings, so one glitch sample is not a rise.
-- From 12 s of ON time, in each tick: PTC rise ≥ 3.0 °C and PTC rise > 2 ×
-  chamber rise → **pass**.
-- At 30 s of ON time without a pass:
-  - PTC rise ≥ 3.0 °C (both channels rose) → **uncertain**. It reports only: no
-    latch, no stored result. The next heat runs the check again.
-  - PTC rise < 3.0 °C, chamber rise ≥ 5.0 °C and chamber rise ≥ PTC rise + 3.0 °C
-    → **crossed**.
-  - PTC rise < 3.0 °C in all other cases → **no-rise** (dead element, open
-    element circuit, or a PTC thermistor that is not on the element).
-- Why crossed has margins: the chamber thermistor sits in the heater's own
-  outlet air. At full power that air can rise 75–150 K (an estimate). It cannot
-  get hotter than the element. Thus a chamber lead means crossed thermistors or
-  a PTC thermistor that lags the element. A well-coupled PTC thermistor rises
-  about 1.5–3 °C/s (a real trace: 1.44 °C/s), so it passes long before 30 s.
-  Crossed therefore needs a PTC that stayed nearly flat for 30 s of ON time and
-  a clear chamber lead. When both channels rise a lot, the result is uncertain,
-  never crossed. A PTC that stays flat is a fault in both cases: the PTC cutoff
-  cannot protect an element that its thermistor does not see.
-- A window with less ON time after 120 s of wall time closes without a result.
-  The next relay-on opens a new one. A stop, a fault latch or any hazard trip
-  closes the window without a result. A hazard trip in the same tick wins.
+- From 12 s of ON time: PTC rise ≥ 3.0 °C and > 2 × chamber rise → **pass**.
+- A failed result needs mostly continuous heat: only within 60 s of wall time
+  after the open (a duty of 50 % or more). Short ON pulses at a low duty do not
+  add up to a rise. In that time:
+  - From 12 s of ON time: chamber rise ≥ 2 × PTC rise + 2.0 °C and chamber rise
+    ≥ 10.0 °C → **wrong roles**.
+  - At 30 s of ON time: chamber rise ≥ 2 × PTC rise + 2.0 °C → **wrong roles**.
+    Else PTC rise < 2.0 °C → **no-rise** (dead element, open element circuit).
+    Else → **uncertain** (both channels rose by similar amounts).
+- A window without a result after 300 s of wall time closes (a restart, counted
+  in `first_heat.restarts`). A stop, a fault latch, an offset change or any
+  hazard trip also closes it. A hazard trip in the same tick wins.
+
+Why "wrong roles" is "chamber rise ≥ 2 × PTC rise + 2 °C":
+- The chamber thermistor sits in the heater's own outlet air. At full power that
+  air can rise 75–150 K above the inlet (an estimate). With crossed leads the
+  "PTC" channel reads that air and also rises fast, so an absolute limit on the
+  PTC rise misses crossed leads.
+- The outlet air cannot get hotter than the element, and it heats later. In a
+  correct unit the PTC rise is larger than the chamber rise. A well-coupled PTC
+  thermistor rises about 1.5–3 °C/s (a real trace: 1.44 °C/s).
+- A chamber rise of twice the PTC rise plus a margin thus means crossed leads
+  **or** a PTC thermistor that lags the element or is not on it. Both are faults:
+  the PTC cutoff cannot see the element. The fault reason is neutral:
+  `sensor roles wrong or PTC sensor not on element (first-heat check)`.
+- When both rises are similar, the result is **uncertain**: it reports only
+  (no latch, nothing stored), and the next heat checks again.
 
 What a result does:
-- **crossed** and **no-rise** latch the heater off with their own fault cause
-  (`thermistors crossed (first-heat check)`, `heater no-rise (first-heat check)`).
+- **wrong roles** and **no-rise** latch the heater off with their own fault cause.
   The latch persists and clears like a hazard trip. After the clear, the next
   heat runs the check again.
-- **crossed** also stores a hint. The user can stage the swap in Settings
-  (`first_heat_apply_swap=1`, the existing `swap_thermistors`). It applies after
-  a reboot. The firmware never changes the mapping by itself.
+- After **wrong roles**, check the plugs first. If the chamber and PTC plugs are
+  crossed, apply the swap in Settings (`first_heat_apply_swap=1`, the existing
+  `swap_thermistors`). Do not apply it in other cases. If the PTC sensor is loose or not on the
+  element, repair it. The swap applies after a reboot. The firmware never
+  changes the mapping by itself.
 - **pass** is stored in NVS. Later boots skip the check. A change of the active
   thermistor mapping or of a calibration offset makes the stored pass invalid at
   the next boot. `first_heat_rerun=1` forgets the stored result.
-- NVS write failures: the result is retried every 2 s. The write puts the stored
-  state to "unknown" first and writes the new state last, so a failure part way
-  never keeps an old pass (fail-closed: the check runs again).
+- NVS: the latch drops the relay first, then the result is written. A failed
+  write is retried every 2 s. The write sets the stored state to "unknown" first.
+  It writes the new state last. Thus a failure part way never keeps an old pass
+  (fail-closed: the check runs again). A re-run during the tick of a result
+  wins over that result.
+
+Supported range (the host tests assert that such a unit never latches):
+- Element power ≥ 150 W while the relay is on (300 W nominal). A 230 V unit on
+  120 V mains (about 75 W) is **out of spec** and can latch "no-rise".
+- The element can reach ≥ 30 K above the air.
+- Both thermistors agree within ±2 °C at the same temperature.
+
+Recovery from a false trip: build with `CONFIG_PB_FIRST_HEAT_REPORT_ONLY=y`
+(Kconfig, default `n`). The check then reports only. The option is inverted on
+purpose: a build that does not know the option enforces the check. It never latches and never
+stores a result. There is no runtime toggle. A safe dev-board build
+(`CONFIG_PB_DEVBOARD_SAFE`, no mains, no element) also reports only.
 
 Limits of the check:
-- It can only **remove** power. It writes the relay only through the existing trip
-  path, never changes the thermistor mapping, and never changes a cutoff,
+- It can only **remove** power. It writes the relay only through the existing
+  trip path, never changes the thermistor mapping, and never changes a cutoff,
   foldback point, ceiling or watchdog value.
-- The thresholds are **provisional**. They come from the stock firmware (3 °C in
-  12 s). They are not yet checked against a first-heat `/diag` capture of an
+- The thresholds are **provisional**. They come from the stock firmware (2–3 °C
+  in 12 s). They are not yet checked against a first-heat `/diag` capture of an
   82 kΩ and a 33 kΩ board.
-- A safe dev-board build (`CONFIG_PB_DEVBOARD_SAFE`, no mains, no element)
-  reports the result only. It does not latch and does not store a result.
+- With crossed leads and outlet air that follows the element closely, the
+  result can be "uncertain" instead of "wrong roles". The fixed 85 °C cutoff,
+  which then watches the element, still trips.
 - The stock firmware's `ntc_bit` key is read at boot and shown as a hint only.
 
 ## Front-panel panic-off (long-press)
@@ -176,7 +200,7 @@ rather than silently ready to heat, and stays that way until an **explicit** cle
 condition has recovered (the next tick re-latches if it hasn't). The persisted
 cause is a small, range-checked numeric code; a live reason string carries
 session detail but is not persisted.
-A first-heat "crossed" or "no-rise" latch is written to NVS and restored in the same way.
+A first-heat "wrong roles" or "no-rise" latch is written to NVS and restored in the same way.
 
 Boot restore is **fail-safe**: if the persisted state cannot be read reliably it
 comes up latched (`persisted fault state unreadable`). A fresh device (no NVS

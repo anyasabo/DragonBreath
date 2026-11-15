@@ -1,0 +1,5 @@
+#pragma once
+#include "esp_err.h"
+
+typedef struct host_adc_cali *adc_cali_handle_t;
+esp_err_t adc_cali_raw_to_voltage(adc_cali_handle_t handle, int raw, int *voltage);

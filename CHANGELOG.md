@@ -16,6 +16,8 @@ below into the GitHub Release notes.
   - control-tick timing: late ticks, last and maximum duration, maximum interval
   - heap, and the stack high-water mark and CPU time of each task
   - uptime, boot count, reset reason, firmware version, Wi-Fi RSSI and HTTP sockets
+  - syslog: enabled, datagrams sent, lines dropped, send errors, queue length,
+    and the SNTP sync state
 
   The writer uses integer math only. It streams the response in chunks through
   a 1 KB buffer. See `docs/api-v2.md`.

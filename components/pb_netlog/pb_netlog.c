@@ -19,6 +19,10 @@ static const char *TAG = "pb_netlog";
 
 #define APP_NAME      "dragonbreath"
 
+// Written once by pb_netlog_start() in app_main, read by the metrics handler.
+static volatile bool s_time_started;
+static volatile bool s_syslog_started;
+
 // Read one host string. If the key is missing or the value is not valid, the
 // field keeps its default ("").
 static void load_host(nvs_handle_t h, const char *key, char *out, size_t out_size)
@@ -80,7 +84,9 @@ void pb_netlog_start(void)
         .use_dhcp = true,
     };
     err = dc_time_start(&time_cfg);
-    if (err != ESP_OK)
+    if (err == ESP_OK)
+        s_time_started = true;
+    else
         ESP_LOGW(TAG, "dc_time_start: %s (log lines have no timestamp)",
                  esp_err_to_name(err));
 
@@ -96,7 +102,24 @@ void pb_netlog_start(void)
         .timestamp = dc_time_format_now,
     };
     err = dc_syslog_start(&syslog_cfg);
-    if (err != ESP_OK)
+    if (err == ESP_OK)
+        s_syslog_started = true;
+    else
         ESP_LOGW(TAG, "dc_syslog_start: %s (continuing without syslog)",
                  esp_err_to_name(err));
+}
+
+void pb_netlog_get_stats(pb_netlog_stats_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (s_syslog_started) {
+        dc_syslog_stats_t st;
+        dc_syslog_stats(&st);
+        out->syslog_enabled = true;
+        out->syslog_sent = st.sent;
+        out->syslog_dropped = st.dropped;
+        out->syslog_send_errors = st.send_errors;
+        out->syslog_queued = st.queued;
+    }
+    out->time_synced = s_time_started && dc_time_is_synced();
 }

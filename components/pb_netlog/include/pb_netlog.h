@@ -17,6 +17,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 #include "pb_netlog_config.h"
@@ -38,3 +39,16 @@ esp_err_t pb_netlog_set_config(const pb_netlog_config_t *cfg);
 // lease time) or the next reconnect. Until then, only ntp_host can sync the
 // clock. Set ntp_host if the log timestamps are important.
 void pb_netlog_start(void);
+
+typedef struct {
+    bool syslog_enabled;        // dc_syslog runs
+    uint32_t syslog_sent;       // datagrams that sendto() accepted
+    uint32_t syslog_dropped;    // lines dropped because the queue was full
+    uint32_t syslog_send_errors;// failed sends and address lookups
+    uint32_t syslog_queued;     // lines in the queue now
+    bool time_synced;           // SNTP synced at least once
+} pb_netlog_stats_t;
+
+// Copy the syslog counters and the clock state. Does not block. If syslog is
+// off, the syslog fields are 0. Any task can call it.
+void pb_netlog_get_stats(pb_netlog_stats_t *out);

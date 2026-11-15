@@ -449,6 +449,22 @@ long pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap,
         end_i64(&w, s->http_sockets);
     }
 
+    gauge_u64(&w, "dragonbreath_syslog_enabled", "1 if the device sends its log to a syslog server.",
+              s->syslog_enabled);
+    counter_u64(&w, "dragonbreath_syslog_sent_total", "Syslog datagrams sent since boot.",
+                s->syslog_sent);
+    counter_u64(&w, "dragonbreath_syslog_dropped_total",
+                "Log lines dropped since boot because the syslog queue was full.",
+                s->syslog_dropped);
+    counter_u64(&w, "dragonbreath_syslog_send_errors_total",
+                "Failed syslog sends and server address lookups since boot.",
+                s->syslog_send_errors);
+    gauge_u64(&w, "dragonbreath_syslog_queue_lines", "Log lines in the syslog queue now.",
+              s->syslog_queued);
+    gauge_u64(&w, "dragonbreath_time_synced",
+              "1 after the first SNTP sync. The wall clock is for log timestamps only.",
+              s->time_synced);
+
     flush(&w);
     return w.failed ? -1 : w.total;
 }

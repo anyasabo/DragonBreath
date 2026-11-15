@@ -287,7 +287,7 @@ How the device builds the response:
   only. It uses no `%f`, no cJSON and no allocation of its own.
 - The writer streams the text through a 1 KB buffer on the HTTP task stack.
   The response uses chunked transfer encoding. A typical response is 8–10 KB.
-  The worst case (24 task names, maximum values) is approximately 12 KB.
+  The worst case (24 task names, maximum values) is approximately 13 KB.
 - The snapshot (about 1.1 KB) and the task list are on the heap only while
   the request runs.
 - If the snapshot allocation fails, the response is HTTP 500. If the client
@@ -339,6 +339,15 @@ Rules:
 | `dragonbreath_build_info` | gauge | `version`, `idf_version` | Firmware and ESP-IDF version. Always 1. |
 | `dragonbreath_wifi_rssi_dbm` | gauge | | RSSI of the station link. No sample if not connected. |
 | `dragonbreath_http_open_sockets` | gauge | | Open client sockets of the HTTP server (`httpd_get_client_list`). |
+| `dragonbreath_syslog_enabled` | gauge | | 1 if the device sends its log to a syslog server (`sl_host` is set and `dc_syslog` started). |
+| `dragonbreath_syslog_sent_total` | counter | | Syslog datagrams that `sendto()` accepted. UDP has no acknowledgement, so the server can receive fewer. |
+| `dragonbreath_syslog_dropped_total` | counter | | Log lines dropped because the syslog queue (16 lines) was full, for example before the station had an address. |
+| `dragonbreath_syslog_send_errors_total` | counter | | Failed `sendto()` calls and failed server address lookups. |
+| `dragonbreath_syslog_queue_lines` | gauge | | Log lines in the syslog queue now. |
+| `dragonbreath_time_synced` | gauge | | 1 after the first SNTP sync. It stays 1 until reboot. The wall clock gives only log timestamps. |
+
+Syslog metrics: if syslog is off, the syslog samples are 0. The stack of the
+sender task is in `dragonbreath_task_stack_free_minimum_bytes{task="dc_syslog"}`.
 
 Control-tick timing: the control task records the start and the end of each
 loop with `esp_timer_get_time()`. If a periodic tick starts more than 250 ms
@@ -385,6 +394,8 @@ increase(dragonbreath_control_ticks_late_total[10m]) > 0
 dragonbreath_fault_latched == 1
 dragonbreath_reset_reason_info{reason=~"panic|int_wdt|task_wdt|wdt|brownout"}
 min(dragonbreath_task_stack_free_minimum_bytes) < 512
+increase(dragonbreath_syslog_dropped_total[10m]) > 0
+dragonbreath_syslog_enabled == 1 and dragonbreath_time_synced == 0
 ```
 
 ## Other endpoints (not versioned)

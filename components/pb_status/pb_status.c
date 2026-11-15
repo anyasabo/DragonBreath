@@ -9,8 +9,9 @@
 // The same tag as the old status line in app_main, so the log stays the same.
 static const char *TAG = "dragonbreath";
 
-// The task only formats with integers and logs one line. Its high-water mark
-// is in GET /diag and /metrics (task stacks).
+// The task only formats with integers and logs one line. 3 KB is an estimate:
+// newlib printf and the log hooks have no -fstack-usage data. Check the
+// high-water mark on the dev board (/metrics task stacks) before a change.
 #define PB_STATUS_STACK 3072
 #define PB_STATUS_PRIO  1
 

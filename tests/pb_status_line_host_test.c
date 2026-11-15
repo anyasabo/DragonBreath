@@ -61,31 +61,58 @@ static pb_status_sample_t sample(bool bambu, float target, float ch, float ptc,
     return s;
 }
 
-// True if %.1f and %.0f of v cannot depend on the rounding rule (no tie).
-static bool far_from_tie(float v)
+// The text of one value: the new formatter against printf.
+static void check_one(float v)
 {
-    float t = fabsf(v) * 10.0f;
-    float f1 = t - floorf(t);
-    float w = fabsf(v);
-    float f0 = w - floorf(w);
-    return fabsf(f1 - 0.5f) > 0.02f && fabsf(f0 - 0.5f) > 0.002f;
+    char got[PB_STATUS_LINE_MAX], want[PB_STATUS_LINE_MAX];
+    for (int key = 0; key < 2; key++) {
+        pb_status_sample_t s = sample(false, 40.0f, v, 20.0f, 60.0f, 0, 0);
+        pb_status_format(&s, key, got, sizeof got);
+        old_line(want, sizeof want, false, key, 40.0f, v, 20.0f, 60.0f, 0, 0);
+        CHECK_STR(got, want);
+    }
 }
 
 static void test_tenths(void)
 {
-    CHECK(pb_status_temp(21.54f).dc == 215);
-    CHECK(pb_status_temp(21.54f).whole == 22);
-    CHECK(pb_status_temp(21.55f).dc == 216);
-    CHECK(pb_status_temp(130.46f).dc == 1305);
-    CHECK(pb_status_temp(130.46f).whole == 130);   // one rounding, not two
-    CHECK(pb_status_temp(-0.05f).dc == -1);
-    CHECK(pb_status_temp(-5.2f).dc == -52);
-    CHECK(pb_status_temp(-5.2f).whole == -5);
-    CHECK(pb_status_temp(NAN).dc == PB_STATUS_UNKNOWN);
-    CHECK(pb_status_temp(NAN).whole == PB_STATUS_UNKNOWN);
-    CHECK(pb_status_temp(INFINITY).dc == PB_STATUS_UNKNOWN);
-    CHECK(pb_status_temp(-INFINITY).whole == PB_STATUS_UNKNOWN);
-    CHECK(pb_status_temp(1e9f).dc == PB_STATUS_UNKNOWN);
+    pb_status_temp_t t = pb_status_temp(21.54f);
+    CHECK(t.known && !t.neg && t.dc == 215 && t.whole == 22);
+    t = pb_status_temp(130.46f);
+    CHECK(t.dc == 1305 && t.whole == 130);         // one rounding, not two
+    t = pb_status_temp(-5.2f);
+    CHECK(t.known && t.neg && t.dc == 52 && t.whole == 5);
+    // Ties on the exact binary value round half to even, as printf.
+    CHECK(pb_status_temp(0.25f).dc == 2);           // 0.25 is exact: "0.2"
+    CHECK(pb_status_temp(0.75f).dc == 8);           // "0.8"
+    CHECK(pb_status_temp(0.35f).dc == 3);           // 0.3499999940...: "0.3"
+    CHECK(pb_status_temp(42.5f).whole == 42);       // "42"
+    CHECK(pb_status_temp(43.5f).whole == 44);       // "44"
+    t = pb_status_temp(-0.04f);
+    CHECK(t.known && t.neg && t.dc == 0);           // "-0.0"
+    t = pb_status_temp(-0.0f);
+    CHECK(t.known && t.neg && t.dc == 0 && t.whole == 0);
+    CHECK(pb_status_temp(1e-45f).dc == 0);          // subnormal
+    CHECK(pb_status_temp(100000.0f).dc == 1000000);
+    CHECK(!pb_status_temp(NAN).known);
+    CHECK(!pb_status_temp(INFINITY).known);
+    CHECK(!pb_status_temp(-INFINITY).known);
+    CHECK(!pb_status_temp(1e9f).known);
+    CHECK(!pb_status_temp(100000.01f).known);
+}
+
+// Ties and values near ties: each k / 20 and k / 200 degrees in -50 .. 150 C,
+// the float next to each one, and the tie cases of the review.
+static void test_ties_same_as_printf(void)
+{
+    static const float cases[] = { 0.35f, 42.5f, -0.04f, 0.25f, -0.25f, -0.5f, 0.5f,
+                                   1.5f, 2.5f, -2.5f, 0.05f, -0.05f, 99.95f, 0.0f, -0.0f };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) check_one(cases[i]);
+    for (int k = -10000; k <= 30000 && failures <= 5; k++) {
+        float v = (float)k / 200.0f;
+        check_one(v);
+        check_one(nextafterf(v, 1e9f));
+        check_one(nextafterf(v, -1e9f));
+    }
 }
 
 static void test_same_text_as_old_code(void)
@@ -96,13 +123,8 @@ static void test_same_text_as_old_code(void)
     for (int i = 0; i < 20000; i++) {
         float v[6];
         for (int k = 0; k < 6; k++)
-            v[k] = (float)(rand() % 200000) / 1000.0f - 40.0f;   // -40 .. 160 C
+            v[k] = (float)(rand() % 200000) / 1000.0f - 40.0f;   // -40 .. 160 C, no filter
         v[0] = (float)(rand() % 71);                             // targets are whole degrees
-        bool ok = true;
-        for (int k = 1; k < 6; k++) ok = ok && far_from_tie(v[k]);
-        // %.0f of a value in (-0.5, 0) gives "-0". The status line never shows it.
-        for (int k = 1; k < 6; k++) ok = ok && !(v[k] > -0.5f && v[k] < 0.0f);
-        if (!ok) continue;
         for (int b = 0; b < 2; b++) {
             for (int key = 0; key < 2; key++) {
                 pb_status_sample_t s = sample(b, v[0], v[1], v[2], v[3], v[4], v[5]);
@@ -114,7 +136,7 @@ static void test_same_text_as_old_code(void)
             }
         }
     }
-    CHECK(compared > 10000);
+    CHECK(compared == 80000);
 }
 
 static void test_nan_and_negative(void)
@@ -126,7 +148,7 @@ static void test_nan_and_negative(void)
     CHECK_STR(got, "rev=7 mode=auto source=web target=0C heater=ON | chamber=nanC ptc=-0.5C | "
                    "wifi=3 src=prusa mk=0 printer=? bed=-12.3");
     pb_status_format(&s, true, got, sizeof got);
-    CHECK_STR(got, "rev=7 mode=auto source=web target=0C heater=ON | chamber=nanC ptc=-1C | "
+    CHECK_STR(got, "rev=7 mode=auto source=web target=0C heater=ON | chamber=nanC ptc=-0C | "
                    "wifi=3 src=prusa mk=0 printer=? bed=-12");
     s = sample(true, 50.0f, 20.0f, 20.0f, 60.0f, 60.0f, NAN);
     s.filament[0] = '\0';
@@ -195,6 +217,7 @@ static void test_truncation(void)
 int main(void)
 {
     test_tenths();
+    test_ties_same_as_printf();
     test_same_text_as_old_code();
     test_nan_and_negative();
     test_repeat_collapse();

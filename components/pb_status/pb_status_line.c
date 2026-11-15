@@ -5,31 +5,53 @@
 #include <stdio.h>
 #include <string.h>
 
-static int32_t round_away(float t)
+// round(mant * 2^exp2 * scale), half to even, exact. mant < 2^24 and the
+// value is at most 100000, so scale 10 fits in 64 bits.
+static uint32_t round_scaled(uint32_t mant, int exp2, uint32_t scale)
 {
-    return (int32_t)(t >= 0.0f ? t + 0.5f : t - 0.5f);
+    uint64_t v = (uint64_t)mant * scale;
+    if (exp2 >= 0) return (uint32_t)(v << exp2);
+    int k = -exp2;
+    if (k > 40) return 0;                  // v < 2^28: below one half
+    uint64_t q = v >> k;
+    uint64_t rem = v & ((1ull << k) - 1);
+    uint64_t half = 1ull << (k - 1);
+    if (rem > half || (rem == half && (q & 1))) q++;
+    return (uint32_t)q;
 }
 
 pb_status_temp_t pb_status_temp(float c)
 {
-    pb_status_temp_t t = { PB_STATUS_UNKNOWN, PB_STATUS_UNKNOWN };
+    pb_status_temp_t t = { false, false, 0, 0 };
     // c != c: NaN. The range check also rejects +-Inf.
     if (c != c || c > 100000.0f || c < -100000.0f) return t;
-    t.dc = round_away(c * 10.0f);
-    t.whole = round_away(c);
+    uint32_t bits;
+    memcpy(&bits, &c, sizeof bits);
+    uint32_t e = (bits >> 23) & 0xFF;
+    uint32_t mant = bits & 0x7FFFFF;
+    int exp2;
+    if (e == 0) {
+        exp2 = -149;                       // subnormal
+    } else {
+        mant |= 0x800000;
+        exp2 = (int)e - 150;
+    }
+    t.known = true;
+    t.neg = (bits >> 31) != 0;
+    t.dc = round_scaled(mant, exp2, 10);
+    t.whole = round_scaled(mant, exp2, 1);
     return t;
 }
 
 // "21.5" (tenths) or "22" (whole), "nan" if unknown.
 static const char *fmt_temp(char *out, size_t cap, pb_status_temp_t t, bool whole)
 {
-    int32_t v = whole ? t.whole : t.dc;
-    if (v == PB_STATUS_UNKNOWN) {
+    if (!t.known) {
         snprintf(out, cap, "nan");
         return out;
     }
-    const char *sign = v < 0 ? "-" : "";
-    uint32_t a = v < 0 ? (uint32_t)0 - (uint32_t)v : (uint32_t)v;
+    const char *sign = t.neg ? "-" : "";
+    uint32_t a = whole ? t.whole : t.dc;
     if (whole)
         snprintf(out, cap, "%s%lu", sign, (unsigned long)a);
     else

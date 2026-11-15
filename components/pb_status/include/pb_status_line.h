@@ -8,18 +8,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// A temperature without a valid value. The line shows "nan", as "%.1f" did.
-#define PB_STATUS_UNKNOWN   INT32_MIN
 #define PB_STATUS_LINE_MAX  224
 // A liveness line each N repeated samples (~60 s at one sample each 2 s).
 #define PB_STATUS_REPEAT_FLUSH 30
 
 // One temperature: tenths for the line, whole degrees for the key. Both are
-// rounded from the float, so a value near a tie gives the same text as the old
-// "%.1f" and "%.0f" (one rounding, not two).
+// rounded from the exact binary value of the float, half to even, as printf
+// "%.1f" and "%.0f" do. Thus the text is the same as the old printf text,
+// also at a tie and for "-0.0".
 typedef struct {
-    int32_t dc;                 // tenths of a degree C, or PB_STATUS_UNKNOWN
-    int32_t whole;              // degrees C, or PB_STATUS_UNKNOWN
+    bool known;                 // false: not finite or out of range ("nan")
+    bool neg;                   // the float is negative (printf shows "-0.0")
+    uint32_t dc;                // magnitude in tenths of a degree C
+    uint32_t whole;             // magnitude in degrees C
 } pb_status_temp_t;
 
 // One status sample. The control task fills it and the status task formats it.
@@ -58,8 +59,9 @@ typedef struct {
 
 typedef void (*pb_status_emit_fn)(void *ctx, const char *line);
 
-// Degrees C to tenths and to whole degrees, each rounded half away from zero.
-// Not finite, or out of +-100000 C: PB_STATUS_UNKNOWN. Float math only.
+// Degrees C to tenths and to whole degrees, each rounded half to even from
+// the exact value of the float (integer math on the float bits, no double).
+// Not finite, or out of +-100000 C: known is false.
 pb_status_temp_t pb_status_temp(float c);
 
 // Write the line ("rev=... | chamber=21.5C ...") without the ZC part. If

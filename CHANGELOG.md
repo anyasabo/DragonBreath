@@ -7,6 +7,11 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+- **`POST /settings` applies all fields or none.** The handler applied each
+  field as soon as it read it. A bad field after a good one gave HTTP 400, but the
+  good field was already saved. Now the handler checks every field first.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

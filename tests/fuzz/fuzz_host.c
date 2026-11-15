@@ -14,6 +14,9 @@
 
 #define MAX_URI_LEN 512        // CONFIG_HTTPD_MAX_URI_LEN default
 #define STALL_LIMIT 64         // timeouts for one stalled request before we stop
+#define RECV_WAIT_US 5000000   // recv_wait_timeout of HTTPD_DEFAULT_CONFIG()
+#define DRIP_US      4900000   // a drip client sends 1 byte just before the timeout
+#define PURGE_BUF_LEN 32       // CONFIG_HTTPD_PURGE_BUF_LEN default
 
 void fuzz_fail(const char *file, int line, const char *what)
 {
@@ -67,6 +70,7 @@ size_t fuzz_read_knobs(const uint8_t *data, size_t size, fuzz_knobs_t *k)
     k->nvs_write_fails = data[1] & 0x01;
     k->recv_timeouts = data[1] & 0x02;
     k->client_stalls = data[1] & 0x04;
+    k->client_drips = data[1] & 0x08;
     k->device[0] = data[2];
     k->device[1] = data[3];
     return 4;
@@ -273,31 +277,26 @@ uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t wait) { (void)clear; (voi
 
 // ---- esp_http_server ---------------------------------------------------------------
 
-typedef struct {
-    httpd_method_t method;
-    char uri[64];
-    esp_err_t (*handler)(httpd_req_t *);
-} route_t;
-
-static route_t s_routes[64];
+static fuzz_route_t s_routes[64];
 static unsigned s_route_count;
 
 esp_err_t httpd_register_uri_handler(httpd_handle_t hd, const httpd_uri_t *uri)
 {
     FUZZ_CHECK(hd != NULL && uri && uri->uri && uri->handler, "bad route registration");
     FUZZ_CHECK(s_route_count < 64, "too many routes");
-    route_t *r = &s_routes[s_route_count++];
+    fuzz_route_t *r = &s_routes[s_route_count++];
     r->method = uri->method;
     snprintf(r->uri, sizeof r->uri, "%s", uri->uri);
     r->handler = uri->handler;
+    r->user_ctx = uri->user_ctx;
     return ESP_OK;
 }
 
-esp_err_t (*fuzz_find_route(httpd_method_t method, const char *uri))(httpd_req_t *)
+const fuzz_route_t *fuzz_find_route(httpd_method_t method, const char *uri)
 {
     for (unsigned i = 0; i < s_route_count; i++)
         if (s_routes[i].method == method && !strcmp(s_routes[i].uri, uri))
-            return s_routes[i].handler;
+            return &s_routes[i];
     return NULL;
 }
 
@@ -310,8 +309,21 @@ static size_t s_consumed;      // body bytes given to the handler
 static unsigned s_timeouts;    // consecutive injected timeouts
 static unsigned s_stalls;      // timeouts for a stalled client
 static bool s_last_short;      // the last recv() gave less than the handler asked for
+static int64_t s_held_us;      // time that the httpd task waited for this client
 
 bool fuzz_in_request(void) { return s_cur != NULL; }
+
+size_t fuzz_body_consumed(void) { return s_consumed; }
+
+// The httpd task waits wait_us for the client. No request can hold the task
+// longer than FUZZ_REQUEST_BOUND_US.
+static void client_wait(int64_t wait_us)
+{
+    fuzz_advance_ms((uint32_t)(wait_us / 1000));
+    s_held_us += wait_us;
+    FUZZ_CHECK(s_held_us <= FUZZ_REQUEST_BOUND_US,
+               "a slow client held the httpd task longer than the bound");
+}
 
 static void check_req(httpd_req_t *r)
 {
@@ -319,20 +331,26 @@ static void check_req(httpd_req_t *r)
     FUZZ_CHECK(r == &s_req || r == &s_async_req, "httpd call with an unknown request");
 }
 
-int httpd_req_recv(httpd_req_t *r, char *buf, size_t buf_len)
+// The fake client: one recv() of at most buf_len body bytes.
+static int client_recv(char *buf, size_t buf_len)
 {
-    check_req(r);
-    if (!buf) return HTTPD_SOCK_ERR_INVALID;
-    // The handler says that buf holds buf_len bytes. Touch the last one, so that
-    // ASan finds a handler that gives a length larger than its buffer.
-    if (buf_len) ((volatile char *)buf)[buf_len - 1] = ((volatile char *)buf)[buf_len - 1];
-
     size_t remaining = s_cur->content_len - s_consumed;
     if (buf_len > remaining) buf_len = remaining;
     if (buf_len == 0) return 0;
 
+    if (s_knobs.client_drips) {
+        // One byte just before each timeout, up to Content-Length. After the
+        // body of the input, the client sends filler bytes.
+        client_wait(DRIP_US);
+        buf[0] = s_consumed < s_cur->body_len ? (char)s_cur->body[s_consumed] : 'x';
+        s_consumed++;
+        s_last_short = buf_len > 1;
+        return 1;
+    }
+
     if (s_knobs.recv_timeouts && s_timeouts < 2 && rng_next() % 3 == 0) {
         s_timeouts++;
+        client_wait(RECV_WAIT_US);
         return HTTPD_SOCK_ERR_TIMEOUT;
     }
     s_timeouts = 0;
@@ -346,6 +364,7 @@ int httpd_req_recv(httpd_req_t *r, char *buf, size_t buf_len)
         s_stalls++;
         FUZZ_CHECK(s_stalls < STALL_LIMIT,
                    "handler waits for a stalled client without a limit");
+        client_wait(RECV_WAIT_US);
         return HTTPD_SOCK_ERR_TIMEOUT;
     }
     size_t n = buf_len < avail ? buf_len : avail;
@@ -354,6 +373,29 @@ int httpd_req_recv(httpd_req_t *r, char *buf, size_t buf_len)
     s_consumed += n;
     s_last_short = n < buf_len;
     return (int)n;
+}
+
+int httpd_req_recv(httpd_req_t *r, char *buf, size_t buf_len)
+{
+    check_req(r);
+    if (!buf) return HTTPD_SOCK_ERR_INVALID;
+    // The handler says that buf holds buf_len bytes. Touch the last one, so that
+    // ASan finds a handler that gives a length larger than its buffer.
+    if (buf_len) ((volatile char *)buf)[buf_len - 1] = ((volatile char *)buf)[buf_len - 1];
+    return client_recv(buf, buf_len);
+}
+
+// httpd_req_delete() of ESP-IDF v5.3 (httpd_parse.c): after a handler returns
+// ESP_OK, read and discard the rest of the body. Stop at the first timeout,
+// error or close. There is no time limit and no limit on Content-Length.
+static void purge_body(void)
+{
+    char dummy[PURGE_BUF_LEN];
+    bool last_short = s_last_short;   // the handler did not see these reads
+    while (s_consumed < s_cur->content_len) {
+        if (client_recv(dummy, sizeof dummy) <= 0) break;
+    }
+    s_last_short = last_short;
 }
 
 int httpd_req_to_sockfd(httpd_req_t *r)
@@ -586,7 +628,9 @@ bool fuzz_next_request(const uint8_t **data, size_t *size, fuzz_request_t *req)
             snprintf(req->auth, sizeof req->auth, "%s", v);
         } else if (!strcasecmp(line, "Content-Length")) {
             req->has_content_len = true;
-            req->content_len = (size_t)strtoul(v, NULL, 10) % 65536;
+            // A size_t on the ESP32-C3 has 32 bits.
+            unsigned long long n = strtoull(v, NULL, 10);
+            req->content_len = n > UINT32_MAX ? UINT32_MAX : (size_t)n;
         }
     }
     req->body = p;
@@ -608,8 +652,7 @@ void fuzz_host_reset(const fuzz_knobs_t *knobs)
     s_route_count = 0;
 }
 
-void fuzz_run(esp_err_t (*handler)(httpd_req_t *), const fuzz_request_t *req,
-              fuzz_response_t *resp)
+void fuzz_run(const fuzz_route_t *route, const fuzz_request_t *req, fuzz_response_t *resp)
 {
     memset(resp, 0, sizeof *resp);
     resp->status = 200;
@@ -617,6 +660,7 @@ void fuzz_run(esp_err_t (*handler)(httpd_req_t *), const fuzz_request_t *req,
     s_req.handle = (httpd_handle_t)1;
     s_req.method = (int)req->method;
     s_req.content_len = req->content_len;
+    s_req.user_ctx = route->user_ctx;
     snprintf((char *)s_req.uri, sizeof s_req.uri, "%s%s%s",
              req->uri, req->has_query ? "?" : "", req->has_query ? req->query : "");
     s_cur = req;
@@ -625,9 +669,11 @@ void fuzz_run(esp_err_t (*handler)(httpd_req_t *), const fuzz_request_t *req,
     s_timeouts = 0;
     s_stalls = 0;
     s_last_short = false;
+    s_held_us = 0;
     unsigned before = s_mutations;
 
-    (void)handler(&s_req);
+    if (route->handler(&s_req) == ESP_OK) purge_body();
+    // Else httpd closes the socket.
 
     s_cur = NULL;
     s_resp = NULL;

@@ -3,7 +3,8 @@
 // presets and the other product routes. A LAN client can send each of these
 // requests. The harness compiles the real db_portal.c and db_portal_config.c.
 // dc_portal (dragon-core) parses the form body and calls apply_product(). Small
-// stand-ins below copy that behaviour of dc_portal v0.36.0.
+// stand-ins below copy that behaviour of dc_portal v0.36.0, with the body
+// limits of dragon-core fix/portal-body-read.
 //
 // Input: 4 knob bytes (see fuzz_read_knobs), then requests in the format of
 // fuzz_next_request().
@@ -21,6 +22,7 @@
 #include "db_portal_config.h"
 #include "dc_portal.h"
 #include "dc_wifi.h"
+#include "esp_timer.h"
 #include "fuzz_host.h"
 #include "nvs.h"
 #include "pb_httpd.h"
@@ -174,6 +176,58 @@ bool pb_httpd_auth_ok(httpd_req_t *req)
 
 esp_err_t pb_httpd_register(httpd_handle_t server) { return server ? ESP_OK : ESP_ERR_INVALID_ARG; }
 
+// A route handler as pb_httpd_register_route() (fix/httpd-body-read) and the
+// dc_portal built-in routes (dragon-core fix/portal-body-read) run it: if body
+// bytes stay unread after the handler, return ESP_FAIL. Then httpd closes the
+// socket and does not read the rest of the body.
+static httpd_uri_t s_wrapped[16];
+static size_t s_wrapped_count;
+
+static esp_err_t wrapped_route(httpd_req_t *req)
+{
+    const httpd_uri_t *route = req->user_ctx;
+    req->user_ctx = route->user_ctx;
+    esp_err_t err = route->handler(req);
+    return err == ESP_OK && fuzz_body_consumed() < req->content_len ? ESP_FAIL : err;
+}
+
+esp_err_t pb_httpd_register_route(httpd_handle_t server, const httpd_uri_t *uri)
+{
+    FUZZ_CHECK(s_wrapped_count < sizeof s_wrapped / sizeof s_wrapped[0], "too many routes");
+    httpd_uri_t *copy = &s_wrapped[s_wrapped_count++];
+    *copy = *uri;
+    httpd_uri_t wrapped = *uri;
+    wrapped.handler = wrapped_route;
+    wrapped.user_ctx = copy;
+    return httpd_register_uri_handler(server, &wrapped);
+}
+
+// The bounded body read of pb_httpd_read_body() and dc_portal_read_body(): stop
+// after 3 timeouts in a row with no data, or after 10 s in total.
+static bool bounded_read(httpd_req_t *req, char *buf, size_t len)
+{
+    const int64_t start = esp_timer_get_time();
+    size_t got = 0;
+    int idle = 0;
+    while (got < len) {
+        if (esp_timer_get_time() - start > 10 * 1000000LL) return false;
+        int r = httpd_req_recv(req, buf + got, len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (++idle >= 3) return false;
+            continue;
+        }
+        if (r <= 0) return false;
+        idle = 0;
+        got += (size_t)r;
+    }
+    return true;
+}
+
+bool pb_httpd_read_body(httpd_req_t *req, char *buf, size_t len)
+{
+    return bounded_read(req, buf, len);
+}
+
 static const esp_app_desc_t s_app = { .version = "fuzz", .project_name = "dragonbreath" };
 const esp_app_desc_t *esp_app_get_description(void) { return &s_app; }
 
@@ -186,7 +240,7 @@ __asm__(".section .rodata\n"
         ".byte 0\n"
         ".previous\n");
 
-// ---- dc_portal stand-ins (dragon-core v0.36.0 behaviour) -------------------------------
+// ---- dc_portal stand-ins (dragon-core v0.36.0 + fix/portal-body-read) ------------------
 
 static dc_portal_config_t s_portal;
 
@@ -210,22 +264,15 @@ static esp_err_t json_error(httpd_req_t *req, const char *status, const char *me
     return send_reply(req, status, root);
 }
 
-// The body read of dc_portal.c recv_json(), with a bound on timeouts so that
-// a stalled client does not hang the harness. dc_portal itself is out of scope.
+// The body read of dc_portal.c recv_json() (dragon-core fix/portal-body-read).
+// dc_portal itself is out of scope.
 static cJSON *portal_recv_json(httpd_req_t *req)
 {
     if (req->content_len <= 0 || req->content_len > 4096) return NULL;
     char *body = malloc(req->content_len + 1);
     FUZZ_CHECK(body != NULL, "out of memory");
-    size_t off = 0;
-    int timeouts = 0;
-    while (off < req->content_len) {
-        int got = httpd_req_recv(req, body + off, req->content_len - off);
-        if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 8) continue;
-        if (got <= 0) { free(body); return NULL; }
-        off += (size_t)got;
-    }
-    body[off] = '\0';
+    if (!bounded_read(req, body, req->content_len)) { free(body); return NULL; }
+    body[req->content_len] = '\0';
     cJSON *root = cJSON_Parse(body);
     free(body);
     return root;
@@ -298,7 +345,7 @@ esp_err_t dc_portal_start(const dc_portal_config_t *config)
         { .uri = "/api/v1/system/reset", .method = HTTP_POST, .handler = reset_post },
     };
     for (size_t i = 0; i < sizeof own / sizeof own[0]; i++)
-        httpd_register_uri_handler((httpd_handle_t)1, &own[i]);
+        pb_httpd_register_route((httpd_handle_t)1, &own[i]);
     return config->register_product_routes((httpd_handle_t)1, config->ctx);
 }
 
@@ -345,15 +392,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     s_armed = s_knobs.device[0] & 0x02;
     s_scanning = false;
     s_persist_failures = 0;
+    s_wrapped_count = 0;
     FUZZ_CHECK(db_portal_start() == ESP_OK, "db_portal_start failed");
 
     fuzz_request_t req;
     for (int n = 0; n < 16 && fuzz_next_request(&data, &size, &req); n++) {
         if (req.wait_s) continue;
-        esp_err_t (*handler)(httpd_req_t *) = fuzz_find_route(req.method, req.uri);
-        if (!handler) continue;
+        const fuzz_route_t *route = fuzz_find_route(req.method, req.uri);
+        if (!route) continue;
         fuzz_response_t resp;
-        fuzz_run(handler, &req, &resp);
+        fuzz_run(route, &req, &resp);
         fuzz_response_free(&resp);
         presets_check();
     }

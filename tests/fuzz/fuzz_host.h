@@ -20,6 +20,7 @@ typedef struct {
     bool nvs_write_fails;  // each NVS write or commit returns an error
     bool recv_timeouts;    // httpd_req_recv() returns a few timeouts between chunks
     bool client_stalls;    // a body shorter than Content-Length: the client keeps the socket open
+    bool client_drips;     // the client sends 1 byte for each 4.9 s, up to Content-Length
     uint8_t device[2];     // device state; each harness gives its own meaning
 } fuzz_knobs_t;
 
@@ -33,7 +34,7 @@ typedef struct {
     bool has_auth;
     char auth[200];            // value of the X-DragonBreath-Auth header
     bool has_content_len;
-    size_t content_len;        // Content-Length header (else the body length)
+    size_t content_len;        // Content-Length header, at most UINT32_MAX (else the body length)
     const uint8_t *body;
     size_t body_len;
 } fuzz_request_t;
@@ -61,18 +62,36 @@ size_t fuzz_read_knobs(const uint8_t *data, size_t size, fuzz_knobs_t *knobs);
 // request moves the clock. Return false at the end of the input.
 bool fuzz_next_request(const uint8_t **data, size_t *size, fuzz_request_t *req);
 
-// Find a handler that the code under test registered with
-// httpd_register_uri_handler(). Return NULL if there is none.
-esp_err_t (*fuzz_find_route(httpd_method_t method, const char *uri))(httpd_req_t *);
+// A route that the code under test registered with httpd_register_uri_handler().
+typedef struct {
+    httpd_method_t method;
+    char uri[64];
+    esp_err_t (*handler)(httpd_req_t *);
+    void *user_ctx;
+} fuzz_route_t;
 
-// Run one handler on one request and check the general invariants:
+// Find a route. Return NULL if there is none.
+const fuzz_route_t *fuzz_find_route(httpd_method_t method, const char *uri);
+
+// The most time that one request can hold the httpd task: the time that the
+// task waits for the client in recv(), for the headers, the body and the purge.
+// dragon-core dc_portal (fix/httpd-request-deadline) closes a request after
+// 20 s. A pb_httpd body read alone stops after about 15 s.
+#define FUZZ_REQUEST_BOUND_US (20 * 1000000LL)
+
+// Run one route on one request, as esp_http_server does, and check the general
+// invariants:
 // - the handler sends exactly one response (or a chunked/async response),
 // - a JSON response body is valid JSON,
 // - a 4xx response comes with no state change (fuzz_mutation()),
 // - a 2xx response does not come from a body that recv() gave only in part,
-// - the handler never asks httpd_req_recv() for more than it can hold.
-void fuzz_run(esp_err_t (*handler)(httpd_req_t *), const fuzz_request_t *req,
-              fuzz_response_t *resp);
+// - the handler never asks httpd_req_recv() for more than it can hold,
+// - the request holds the httpd task for FUZZ_REQUEST_BOUND_US at most. If the
+//   handler returns ESP_OK, httpd_req_delete() reads and discards the rest of
+//   the body. This time counts too.
+void fuzz_run(const fuzz_route_t *route, const fuzz_request_t *req, fuzz_response_t *resp);
+// Body bytes that the client gave to the handler of the current request.
+size_t fuzz_body_consumed(void);
 void fuzz_response_free(fuzz_response_t *resp);
 
 // The fakes call this for each accepted change of device state or NVS.

@@ -7,6 +7,7 @@
 "X-DragonBreath-Auth: 1\x0a"
 "X-DragonBreath-Auth: fuzz-token\x0a"
 "Content-Length: 1536\x0a"
+"Content-Length: 4000000000\x0a"
 "/api/v2/command"
 "/api/v2/heartbeat"
 "/api/v2/state"

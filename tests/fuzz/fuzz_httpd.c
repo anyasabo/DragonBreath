@@ -443,8 +443,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             }
             continue;
         }
-        esp_err_t (*handler)(httpd_req_t *) = fuzz_find_route(req.method, req.uri);
-        if (!handler) continue;
+        const fuzz_route_t *route = fuzz_find_route(req.method, req.uri);
+        if (!route) continue;
 
         pb_policy_snapshot_t before;
         pb_policy_get_snapshot(&before);
@@ -452,7 +452,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         unsigned mutations = fuzz_mutation_count();
 
         fuzz_response_t resp;
-        fuzz_run(handler, &req, &resp);
+        fuzz_run(route, &req, &resp);
 
         pb_policy_snapshot_t after;
         pb_policy_get_snapshot(&after);

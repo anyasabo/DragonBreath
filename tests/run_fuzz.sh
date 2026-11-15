@@ -4,6 +4,12 @@
 # The compiler must be clang with libFuzzer. Set FUZZ_CC to select one.
 # New inputs go to a work directory. The seed corpus in the repo stays the same.
 # tests/vendor/cjson is cJSON v1.7.19, the copy in ESP-IDF v5.3.6 components/json.
+#
+# Merge order: the harnesses find real bugs in upstream main. The fixes are on
+# fix/httpd-body-read (stalled and slow clients, the purge of an unread body)
+# and fix/httpd-settings-validate (settings-bad, zones-target-300). Merge
+# fix/httpd-body-read, then fix/httpd-settings-validate, then this branch.
+# Without them, the seeds fail, for example settings-bad.req and the drip-*.req.
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"

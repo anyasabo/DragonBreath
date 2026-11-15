@@ -33,6 +33,14 @@ endif()
 message(STATUS "DragonBreath version: ${PROJECT_VER}")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Stack-usage files for tools/elf_check.py --stack. Off by default: the .su
+# files do not change the firmware, but the option changes the compile flags,
+# so a build dir with it rebuilds all. Use a separate build dir:
+#   idf.py -B build-stack -D DB_STACK_USAGE=ON build
+option(DB_STACK_USAGE "Write -fstack-usage .su files for each object" OFF)
+if(DB_STACK_USAGE)
+    idf_build_set_property(COMPILE_OPTIONS "-fstack-usage" APPEND)
+endif()
 project(dragonbreath)
 
 # ESP-IDF 5.3.1's HTTP server can process and recycle a socket while an

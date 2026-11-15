@@ -94,6 +94,15 @@ below into the GitHub Release notes.
   the version in `.idf-version` (v5.3.6). ESP-IDF 6 builds get cJSON from the component registry and
   use the split `esp_driver_*` components. They need a dragon-core version
   with ESP-IDF 6 support.
+- The control task does not format or log the 2 s status line any more. It
+  copies a small sample, and a new low-priority task (`pb_status`, priority 1,
+  3 KB stack) formats it with integer tenths and logs it. The log text is the
+  same: the integer rounding is half to even on the exact float value, as
+  `printf` does. The control task now has no float `printf` and no `snprintf`
+  in its periodic path. `pb_policy_get_snapshot()` copies its strings without
+  `snprintf`. The 3 KB stack is an estimate (printf has no stack data). On the
+  dev board, check the high-water mark of the `pb_status` task (the
+  `/metrics` task stack value, or `uxTaskGetStackHighWaterMark`).
 
 ### Fixed
 - **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or

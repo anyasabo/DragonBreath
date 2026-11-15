@@ -647,6 +647,22 @@ static void test_local_power_limit_expires_off_without_fault(void)
         == PB_POLICY_OK);
 }
 
+// The snapshot copies its strings without snprintf. A long reason is cut to the
+// buffer and stays terminated. No reason gives an empty string.
+static void test_snapshot_strings_are_bounded(void)
+{
+    reset_fixture();
+    static const char long_reason[] =
+        "a fault reason that is much longer than the sixty-four byte snapshot buffer of the policy";
+    heater_reason = long_reason;
+    pb_policy_snapshot_t snap = snapshot();
+    CHECK(strlen(snap.fault_reason) == sizeof snap.fault_reason - 1);
+    CHECK(strncmp(snap.fault_reason, long_reason, sizeof snap.fault_reason - 1) == 0);
+    heater_reason = NULL;
+    snap = snapshot();
+    CHECK(snap.fault_reason[0] == '\0');
+}
+
 static void test_external_fault_sync_off_and_clear(void)
 {
     reset_fixture();
@@ -1431,6 +1447,7 @@ int main(void)
     test_drying_is_bounded_and_expires_off();
     test_runtime_limits_drive_auto_and_remote_lease();
     test_local_power_limit_expires_off_without_fault();
+    test_snapshot_strings_are_bounded();
     test_external_fault_sync_off_and_clear();
     test_fault_clear_requires_current_revision();
     test_panel_leds_track_mode();

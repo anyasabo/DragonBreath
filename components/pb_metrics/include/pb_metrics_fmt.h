@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "pb_panic_record.h"
+
 #define PB_METRICS_MAX_TASKS      24   // distinct task names in one response
 #define PB_METRICS_TASK_NAME_LEN  16   // >= configMAX_TASK_NAME_LEN - 1
 // A temperature or target without a valid value. The writer omits that sample.
@@ -32,6 +34,23 @@
 #define PB_METRICS_CAUSE_EMERGENCY         8
 #define PB_METRICS_CAUSE_NVS_UNREADABLE    9   // boot restore only, never counted
 #define PB_METRICS_FAULT_CAUSES           10
+
+// Control-tick duration histogram: upper bounds in microseconds. The +Inf
+// bucket is the tick count.
+#define PB_METRICS_TICK_BUCKETS 8
+#define PB_METRICS_TICK_BUCKET_BOUNDS_US \
+    { 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000 }
+
+// Parts of a control tick (dragonbreath_control_tick_part_seconds_total).
+#define PB_METRICS_PART_SOURCE   0   // read the control source, feed the policy
+#define PB_METRICS_PART_SENSORS  1   // pb_ntc reads in pb_heater_tick
+#define PB_METRICS_PART_POLICY   2   // pb_policy_tick without pb_heater_tick
+#define PB_METRICS_PART_HEATER   3   // pb_heater_tick without the sensor reads
+#define PB_METRICS_PART_OTHER    4   // the rest (watchdog, status sample, metrics)
+#define PB_METRICS_TICK_PARTS    5
+
+// PrusaLink states. The values are dc_prusa_state_t.
+#define PB_METRICS_PRUSA_STATES  5
 
 // Number of esp_reset_reason_t values with a name (ESP_RST_UNKNOWN..CPU_LOCKUP).
 // pb_metrics.c static-asserts it against ESP_RST_CPU_LOCKUP.
@@ -74,6 +93,37 @@ typedef struct {
     uint32_t tick_last_us;
     uint32_t tick_max_us;
     uint32_t tick_interval_max_us;
+    uint32_t tick_bucket[PB_METRICS_TICK_BUCKETS];   // ticks in each bucket (not cumulative)
+    uint64_t tick_sum_us;
+    uint64_t tick_part_us[PB_METRICS_TICK_PARTS];
+    bool tick_parts_valid;
+
+    // Heap allocations that failed (heap_caps failed-alloc callback).
+    uint32_t alloc_failures;
+    uint32_t alloc_failure_last_bytes;
+
+    // Wi-Fi station disconnect events since boot, and the reason of the last one
+    // (wifi_err_reason_t; 0 before the first).
+    uint32_t wifi_disconnects;
+    uint16_t wifi_last_reason;
+
+    // PrusaLink client (only if PrusaLink is the control source).
+    bool prusa_valid;
+    uint8_t prusa_state;            // dc_prusa_state_t
+    uint32_t prusa_status_age_ms;   // UINT32_MAX: no status yet, sample omitted
+
+    // Panic breadcrumb.
+    uint32_t panics;                // panics counted at boot, kept in NVS; 0 also if unknown
+    bool panics_valid;              // false: NVS failed, sample omitted
+    bool last_panic_valid;
+    pb_panic_record_t last_panic;
+
+    // Airflow signs (report-only), see pb_metrics_airflow.h.
+    int32_t airflow_rise_permille;  // PB_METRICS_TEMP_UNKNOWN: sample omitted
+    uint32_t airflow_rise_samples;
+    uint32_t airflow_cool_tau_ms;   // 0: sample omitted
+    uint32_t airflow_cool_samples;
+    uint32_t foldback_cuts;
 
     // Heap (bytes).
     uint32_t heap_free;
@@ -132,6 +182,10 @@ typedef struct {
     uint32_t max_us;            // longest tick
     uint32_t interval_max_us;   // longest time between two tick starts
     int64_t prev_start_us;      // start of the previous tick; 0 before the first
+    uint32_t bucket[PB_METRICS_TICK_BUCKETS];   // ticks in each bucket (not cumulative)
+    uint64_t sum_us;            // sum of all tick durations
+    uint64_t part_us[PB_METRICS_TICK_PARTS];
+    bool parts_valid;           // true after the first pb_metrics_tick_add_parts()
 } pb_metrics_tick_state_t;
 
 // Record one loop iteration. scheduled_us is the planned start of a periodic
@@ -139,3 +193,15 @@ typedef struct {
 // 0..UINT32_MAX us.
 void pb_metrics_tick_update(pb_metrics_tick_state_t *st, int64_t start_us,
                             int64_t end_us, int64_t scheduled_us);
+
+// Add the time of each part of one tick (microseconds) to the part counters.
+void pb_metrics_tick_add_parts(pb_metrics_tick_state_t *st,
+                               const uint32_t part_us[PB_METRICS_TICK_PARTS]);
+
+// Split the measured times of one tick into the parts (all in us). Each
+// argument is a span of the tick: tick (whole), source (before pb_policy_tick),
+// policy_tick (pb_policy_tick), heater_tick and sensors (inside it). A part
+// never goes below 0, and the parts sum to tick if the spans nest.
+void pb_metrics_tick_split(uint32_t tick_us, uint32_t source_us, uint32_t policy_tick_us,
+                           uint32_t heater_tick_us, uint32_t sensors_us,
+                           uint32_t part_us[PB_METRICS_TICK_PARTS]);

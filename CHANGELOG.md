@@ -19,6 +19,19 @@ below into the GitHub Release notes.
 
   The writer uses integer math only. It streams the response in chunks through
   a 1 KB buffer. See `docs/api-v2.md`.
+- `/metrics` diagnostics for problems on the real heater (integer math only, no
+  logging and no blocking in the control task):
+  - a control-tick duration histogram (0.5 ms to 100 ms) and the time of each
+    tick part: source, sensors, policy, heater, other
+  - a panic breadcrumb: at a panic, the task, PC, RA, cause and reason go to RTC
+    RAM (magic and CRC). The next boot logs them, counts the panic in NVS
+    (`app_nvs/panic_cnt`) and exports `dragonbreath_last_panic_info`. The hook
+    wraps `esp_panic_handler`. The panic output and the reboot do not change.
+  - failed heap allocations (count and last size)
+  - Wi-Fi station disconnects (count and last reason)
+  - the PrusaLink client state and status age
+  - report-only airflow signs: the outlet/PTC rise ratio at each heat start, the
+    PTC cooldown time constant with the fan on, and the element foldback cycles
 - `GET /api/v2/state` reports `reset_reason` (the `esp_reset_reason()` of this boot,
   for example `poweron` or `task_wdt`).
 - The firmware counts boots in NVS (`app_nvs/boot_cnt`).

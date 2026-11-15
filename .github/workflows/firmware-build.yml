@@ -84,6 +84,9 @@ jobs:
           command -v uv >/dev/null 2>&1 || pipx install uv
           sh tests/run_metrics_fmt_host_test.sh
 
+      - name: Test metrics diagnostics (airflow signs, panic breadcrumb record)
+        run: sh tests/run_metrics_diag_host_test.sh
+
       - name: Test HIL scenario runner
         run: python3 -m unittest tests/test_hil_runner.py
 

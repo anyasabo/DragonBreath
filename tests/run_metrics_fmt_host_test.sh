@@ -7,6 +7,8 @@ out="${TMPDIR:-/tmp}/dragonbreath-pb-metrics-fmt-test"
 "${CC:-cc}" -std=c11 -Wall -Wextra -Werror ${HOST_TEST_CFLAGS:-} \
   -I"$root/components/pb_metrics/include" \
   "$root/components/pb_metrics/pb_metrics_fmt.c" \
+  "$root/components/pb_metrics/pb_metrics_airflow.c" \
+  "$root/components/pb_metrics/pb_panic_record.c" \
   "$root/tests/pb_metrics_fmt_host_test.c" \
   -lm -o "$out"
 

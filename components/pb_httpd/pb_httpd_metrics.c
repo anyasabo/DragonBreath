@@ -12,6 +12,8 @@
 #include "pb_heater.h"
 #include "pb_ntc.h"
 #include "pb_policy.h"
+#include "dc_prusa.h"
+#include "dc_source.h"
 
 #include "sdkconfig.h"
 #include "esp_app_desc.h"
@@ -46,6 +48,9 @@ _Static_assert(PB_MODE_OFF == 0 && PB_MODE_POWER_ON == 1 && PB_MODE_AUTO == 2 &&
                PB_MODE_DRYING == 3, "mode table order");
 _Static_assert(PB_NTC_OK == 0 && PB_NTC_SHORT == 1 && PB_NTC_OPEN == 2 &&
                PB_NTC_UNINIT == 3, "sensor status table order");
+_Static_assert(DC_PRUSA_DISABLED == 0 && DC_PRUSA_CONNECTING == 1 && DC_PRUSA_ONLINE == 2 &&
+               DC_PRUSA_AUTH_FAILED == 3 && DC_PRUSA_OFFLINE == 4 &&
+               PB_METRICS_PRUSA_STATES == 5, "PrusaLink state table order");
 _Static_assert(configMAX_TASK_NAME_LEN - 1 <= PB_METRICS_TASK_NAME_LEN, "task name length");
 
 #if CONFIG_FREERTOS_USE_TRACE_FACILITY
@@ -132,6 +137,33 @@ static void collect(pb_metrics_snapshot_t *m, httpd_req_t *req,
     m->tick_last_us = tk.last_us;
     m->tick_max_us = tk.max_us;
     m->tick_interval_max_us = tk.interval_max_us;
+    memcpy(m->tick_bucket, tk.bucket, sizeof m->tick_bucket);
+    m->tick_sum_us = tk.sum_us;
+    memcpy(m->tick_part_us, tk.part_us, sizeof m->tick_part_us);
+    m->tick_parts_valid = tk.parts_valid;
+
+    pb_metrics_get_alloc_failures(&m->alloc_failures, &m->alloc_failure_last_bytes);
+    pb_metrics_get_wifi_disconnects(&m->wifi_disconnects, &m->wifi_last_reason);
+    m->panics_valid = pb_metrics_panic_count(&m->panics);
+    m->last_panic_valid = pb_metrics_last_panic(&m->last_panic);
+
+    pb_airflow_t af;
+    pb_metrics_get_airflow(&af);
+    m->airflow_rise_permille = af.rise_ratio_permille;
+    m->airflow_rise_samples = af.rise_samples;
+    m->airflow_cool_tau_ms = af.cool_tau_ms;
+    m->airflow_cool_samples = af.cool_samples;
+    m->foldback_cuts = hc.foldback_cuts;
+
+    // PrusaLink: only if it is the control source (else the client is not started).
+    if (dc_source_get() == DC_SRC_PRUSA) {
+        dc_prusa_status_t ps;
+        if (dc_prusa_get_status(&ps) == ESP_OK) {
+            m->prusa_valid = true;
+            m->prusa_state = (uint8_t)ps.state;
+            m->prusa_status_age_ms = ps.status_age_ms;
+        }
+    }
 
     m->heap_free = heap_free;
     m->heap_min_free = heap_min;

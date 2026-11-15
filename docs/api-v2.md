@@ -286,9 +286,9 @@ How the device builds the response:
 - A pure writer (`components/pb_metrics`) formats the text with integer math
   only. It uses no `%f`, no cJSON and no allocation of its own.
 - The writer streams the text through a 1 KB buffer on the HTTP task stack.
-  The response uses chunked transfer encoding. A typical response is 8–10 KB.
-  The worst case (24 task names, maximum values) is approximately 12 KB.
-- The snapshot (about 1.1 KB) and the task list are on the heap only while
+  The response uses chunked transfer encoding. A typical response is 12–14 KB.
+  The worst case (24 task names, maximum values) is approximately 17 KB.
+- The snapshot (about 1.3 KB) and the task list are on the heap only while
   the request runs.
 - If the snapshot allocation fails, the response is HTTP 500. If the client
   closes the connection during the response, the device stops the response.
@@ -326,9 +326,13 @@ Rules:
 | `dragonbreath_control_tick_duration_seconds` | gauge | | Duration of the last control tick (1 µs resolution). |
 | `dragonbreath_control_tick_duration_max_seconds` | gauge | | Longest control tick since boot. |
 | `dragonbreath_control_tick_interval_max_seconds` | gauge | | Longest time between the starts of two ticks since boot. The period is 0.5 s. |
+| `dragonbreath_control_tick_seconds` | histogram | `le` = `0.0005`, `0.001`, `0.002`, `0.005`, `0.01`, `0.02`, `0.05`, `0.1`, `+Inf` | Duration of each control tick since boot. `_count` is the tick count. |
+| `dragonbreath_control_tick_part_seconds_total` | counter | `part` = `source`, `sensors`, `policy`, `heater`, `other` | Time in each part of the control tick since boot. No sample before the first tick. |
 | `dragonbreath_heap_free_bytes` | gauge | | Free heap. |
 | `dragonbreath_heap_minimum_free_bytes` | gauge | | Lowest free heap since boot. |
 | `dragonbreath_heap_largest_free_block_bytes` | gauge | | Largest free heap block (8-bit capable). |
+| `dragonbreath_heap_alloc_failures_total` | counter | | Heap allocations that failed since boot (`heap_caps_register_failed_alloc_callback`). |
+| `dragonbreath_heap_alloc_failure_last_bytes` | gauge | | Size of the last allocation that failed. 0 if none. |
 | `dragonbreath_tasks` | gauge | | Number of FreeRTOS tasks. |
 | `dragonbreath_task_instances` | gauge | `task` | Number of tasks with this name. |
 | `dragonbreath_task_stack_free_minimum_bytes` | gauge | `task` | Stack high-water mark: the least free stack since start. The minimum of the tasks with this name. |
@@ -338,6 +342,17 @@ Rules:
 | `dragonbreath_reset_reason_info` | gauge | `reason` | `esp_reset_reason()` of this boot (the strings of `reset_reason` in `/api/v2/state`). Always 1. |
 | `dragonbreath_build_info` | gauge | `version`, `idf_version` | Firmware and ESP-IDF version. Always 1. |
 | `dragonbreath_wifi_rssi_dbm` | gauge | | RSSI of the station link. No sample if not connected. |
+| `dragonbreath_wifi_disconnects_total` | counter | | Wi-Fi station disconnect events since boot. Each failed connect attempt also counts. |
+| `dragonbreath_wifi_last_disconnect_reason` | gauge | | `wifi_err_reason_t` of the last disconnect (for example 201 = no AP found). 0 if none. |
+| `dragonbreath_prusalink_state` | gauge | `state` = `disabled`, `connecting`, `online`, `auth_failed`, `offline` | PrusaLink client state (state set). Only if PrusaLink is the control source. |
+| `dragonbreath_prusalink_status_age_seconds` | gauge | | Age of the last complete PrusaLink status. Only with PrusaLink. No sample before the first status. |
+| `dragonbreath_panics_total` | counter | | Panics found at boot, kept in NVS (like `boots_total`). No sample if NVS failed. |
+| `dragonbreath_last_panic_info` | gauge | `task`, `kind`, `pc`, `ra`, `mcause`, `reason`, `backtrace` | The last panic breadcrumb. Always 1. No sample if there is none. |
+| `dragonbreath_airflow_rise_ratio` | gauge | | Report-only. Outlet (chamber NTC) rise divided by the PTC rise over the first 45 s of relay on-time after the last heat start. No sample before the first. |
+| `dragonbreath_airflow_rise_samples_total` | counter | | Report-only. Rise ratio samples since boot. |
+| `dragonbreath_airflow_ptc_cooldown_seconds` | gauge | | Report-only. Last PTC cooldown time constant with the fan on. No sample before the first. |
+| `dragonbreath_airflow_ptc_cooldown_samples_total` | counter | | Report-only. Cooldown samples since boot. |
+| `dragonbreath_heater_foldback_cuts_total` | counter | | Element foldback cuts since boot (one for each foldback cycle). |
 | `dragonbreath_http_open_sockets` | gauge | | Open client sockets of the HTTP server (`httpd_get_client_list`). |
 
 Control-tick timing: the control task records the start and the end of each
@@ -346,6 +361,48 @@ loop with `esp_timer_get_time()`. If a periodic tick starts more than 250 ms
 (an accepted command or a panic-off) is not a scheduled tick, so it is never
 late. If `dragonbreath_control_ticks_late_total` increases, or the maximum
 interval is much more than 500 ms, other work delays the control loop.
+
+Tick parts: `source` is the read of the control source before `pb_policy_tick()`
+(this includes the MQTT publish of Klipper-over-MQTT and Home Assistant).
+`sensors` is the two thermistor reads in `pb_heater_tick()`. `heater` is the
+rest of `pb_heater_tick()`. `policy` is `pb_policy_tick()` without
+`pb_heater_tick()`. `other` is the rest: the watchdog feed, the status sample
+and the metrics. The share of a part:
+
+```promql
+rate(dragonbreath_control_tick_part_seconds_total[5m])
+  / ignoring(part) group_left rate(dragonbreath_control_tick_seconds_sum[5m])
+histogram_quantile(0.99, rate(dragonbreath_control_tick_seconds_bucket[1h]))
+```
+
+Panic breadcrumb: at a panic, the firmware writes the task name, the PC, the
+RA, the cause and a short reason (for example the `abort()` details) to RTC
+no-init RAM, with a magic number and a CRC. The panic output and the reboot do
+not change. At the next boot, the firmware logs the record
+(`pb_metrics: last panic: task=...`) and increments the NVS counter. The record
+stays until the next panic or a power cycle, so a later soft reset shows it
+again, but does not count it again. `pc` and `ra` are code addresses: use
+`riscv32-esp-elf-addr2line -e dragonbreath.elf ADDR` with the ELF of the same
+build. `backtrace` is empty unless the build uses frame pointers
+(`CONFIG_ESP_SYSTEM_USE_FRAME_POINTER`, ESP-IDF v6). Without frame pointers, a
+frame walk on RISC-V is not safe, so the record has the PC and the RA only.
+
+Airflow signs (report-only, no limits yet): the values are for a baseline
+from the first good heats. A stalled or slow fan gives a lower rise ratio and
+a longer cooldown time. At a heat start (a target is armed and both sensors
+are ok), the rise window starts. If the relay goes off with the fan on and the
+PTC is 15 °C or more above the chamber, a cooldown starts. If the excess falls
+to 1/e (36.8 %), the cooldown ends. If the relay goes on again first, there is
+no sample. Foldback
+cycles for each hour:
+
+```promql
+increase(dragonbreath_heater_foldback_cuts_total[1h])
+```
+
+PrusaLink: dragon-core `dc_prusa` does not report the poll time, the errors or
+the timeouts. The device exports the client state and the status age. A status
+age much more than the poll period shows failed polls.
 
 Per-task metrics: the `task` label is the FreeRTOS task name. Tasks with the
 same name (for example two `db_sse` streams) share one series. The response
@@ -385,6 +442,8 @@ increase(dragonbreath_control_ticks_late_total[10m]) > 0
 dragonbreath_fault_latched == 1
 dragonbreath_reset_reason_info{reason=~"panic|int_wdt|task_wdt|wdt|brownout"}
 min(dragonbreath_task_stack_free_minimum_bytes) < 512
+increase(dragonbreath_panics_total[1d]) > 0
+increase(dragonbreath_heap_alloc_failures_total[1h]) > 0
 ```
 
 ## Other endpoints (not versioned)

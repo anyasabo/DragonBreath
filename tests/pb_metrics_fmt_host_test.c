@@ -5,6 +5,7 @@
 //
 // "--dump" writes the text of a realistic snapshot to stdout, for the
 // prometheus-client parse check in run_metrics_fmt_host_test.sh.
+#include "pb_metrics_airflow.h"
 #include "pb_metrics_fmt.h"
 
 #include <math.h>
@@ -85,6 +86,40 @@ static void known_snapshot(pb_metrics_snapshot_t *s)
     s->tick_last_us = 850;
     s->tick_max_us = 41000;
     s->tick_interval_max_us = 512000;
+    // 7199 ticks in the buckets, one tick above 0.1 s (only in +Inf).
+    static const uint32_t buckets[PB_METRICS_TICK_BUCKETS] = { 7000, 150, 40, 5, 3, 1, 0, 0 };
+    memcpy(s->tick_bucket, buckets, sizeof buckets);
+    s->tick_sum_us = 6500123;
+    s->tick_parts_valid = true;
+    s->tick_part_us[PB_METRICS_PART_SOURCE] = 120000;
+    s->tick_part_us[PB_METRICS_PART_SENSORS] = 2000000;
+    s->tick_part_us[PB_METRICS_PART_POLICY] = 300000;
+    s->tick_part_us[PB_METRICS_PART_HEATER] = 400000;
+    s->tick_part_us[PB_METRICS_PART_OTHER] = 3680123;
+    s->alloc_failures = 2;
+    s->alloc_failure_last_bytes = 4096;
+    s->wifi_disconnects = 5;
+    s->wifi_last_reason = 201;
+    s->prusa_valid = true;
+    s->prusa_state = 2;                // online
+    s->prusa_status_age_ms = 1500;
+    s->panics_valid = true;
+    s->panics = 1;
+    s->last_panic_valid = true;
+    strcpy(s->last_panic.task, "pb_control");
+    s->last_panic.kind = PB_PANIC_KIND_TWDT;
+    s->last_panic.pc = 0x4200abcd;
+    s->last_panic.ra = 0x42001234;
+    s->last_panic.mcause = 0x18;
+    strcpy(s->last_panic.reason, "Task watchdog got \"triggered\"");
+    s->last_panic.bt_n = 2;
+    s->last_panic.bt[0] = 0x42000010;
+    s->last_panic.bt[1] = 0x42000020;
+    s->airflow_rise_permille = 412;
+    s->airflow_rise_samples = 3;
+    s->airflow_cool_tau_ms = 95500;
+    s->airflow_cool_samples = 2;
+    s->foldback_cuts = 4;
     s->heap_free = 61000;
     s->heap_min_free = 42000;
     s->heap_largest_block = 30000;
@@ -192,6 +227,26 @@ static const char k_expected[] =
     "# HELP dragonbreath_control_tick_interval_max_seconds Longest time between the starts of two control ticks since boot.\n"
     "# TYPE dragonbreath_control_tick_interval_max_seconds gauge\n"
     "dragonbreath_control_tick_interval_max_seconds 0.512000\n"
+    "# HELP dragonbreath_control_tick_seconds Duration of each control tick since boot.\n"
+    "# TYPE dragonbreath_control_tick_seconds histogram\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"0.0005\"} 7000\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"0.001\"} 7150\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"0.002\"} 7190\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"0.005\"} 7195\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"0.01\"} 7198\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"0.02\"} 7199\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"0.05\"} 7199\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"0.1\"} 7199\n"
+    "dragonbreath_control_tick_seconds_bucket{le=\"+Inf\"} 7200\n"
+    "dragonbreath_control_tick_seconds_sum 6.500123\n"
+    "dragonbreath_control_tick_seconds_count 7200\n"
+    "# HELP dragonbreath_control_tick_part_seconds_total Time in each part of the control tick since boot.\n"
+    "# TYPE dragonbreath_control_tick_part_seconds_total counter\n"
+    "dragonbreath_control_tick_part_seconds_total{part=\"source\"} 0.120000\n"
+    "dragonbreath_control_tick_part_seconds_total{part=\"sensors\"} 2.000000\n"
+    "dragonbreath_control_tick_part_seconds_total{part=\"policy\"} 0.300000\n"
+    "dragonbreath_control_tick_part_seconds_total{part=\"heater\"} 0.400000\n"
+    "dragonbreath_control_tick_part_seconds_total{part=\"other\"} 3.680123\n"
     "# HELP dragonbreath_heap_free_bytes Free heap.\n"
     "# TYPE dragonbreath_heap_free_bytes gauge\n"
     "dragonbreath_heap_free_bytes 61000\n"
@@ -201,6 +256,12 @@ static const char k_expected[] =
     "# HELP dragonbreath_heap_largest_free_block_bytes Largest free heap block.\n"
     "# TYPE dragonbreath_heap_largest_free_block_bytes gauge\n"
     "dragonbreath_heap_largest_free_block_bytes 30000\n"
+    "# HELP dragonbreath_heap_alloc_failures_total Heap allocations that failed since boot.\n"
+    "# TYPE dragonbreath_heap_alloc_failures_total counter\n"
+    "dragonbreath_heap_alloc_failures_total 2\n"
+    "# HELP dragonbreath_heap_alloc_failure_last_bytes Size of the last allocation that failed. 0 if none.\n"
+    "# TYPE dragonbreath_heap_alloc_failure_last_bytes gauge\n"
+    "dragonbreath_heap_alloc_failure_last_bytes 4096\n"
     "# HELP dragonbreath_tasks Number of FreeRTOS tasks.\n"
     "# TYPE dragonbreath_tasks gauge\n"
     "dragonbreath_tasks 3\n"
@@ -231,6 +292,43 @@ static const char k_expected[] =
     "# HELP dragonbreath_wifi_rssi_dbm Wi-Fi RSSI of the station link. No sample if not connected.\n"
     "# TYPE dragonbreath_wifi_rssi_dbm gauge\n"
     "dragonbreath_wifi_rssi_dbm -61\n"
+    "# HELP dragonbreath_wifi_disconnects_total Wi-Fi station disconnect events since boot (each failed connect attempt counts).\n"
+    "# TYPE dragonbreath_wifi_disconnects_total counter\n"
+    "dragonbreath_wifi_disconnects_total 5\n"
+    "# HELP dragonbreath_wifi_last_disconnect_reason wifi_err_reason_t of the last disconnect. 0 if none.\n"
+    "# TYPE dragonbreath_wifi_last_disconnect_reason gauge\n"
+    "dragonbreath_wifi_last_disconnect_reason 201\n"
+    "# HELP dragonbreath_prusalink_state PrusaLink client state. 1 for the current state, 0 for the others.\n"
+    "# TYPE dragonbreath_prusalink_state gauge\n"
+    "dragonbreath_prusalink_state{state=\"disabled\"} 0\n"
+    "dragonbreath_prusalink_state{state=\"connecting\"} 0\n"
+    "dragonbreath_prusalink_state{state=\"online\"} 1\n"
+    "dragonbreath_prusalink_state{state=\"auth_failed\"} 0\n"
+    "dragonbreath_prusalink_state{state=\"offline\"} 0\n"
+    "# HELP dragonbreath_prusalink_status_age_seconds Age of the last complete PrusaLink status. No sample before the first.\n"
+    "# TYPE dragonbreath_prusalink_status_age_seconds gauge\n"
+    "dragonbreath_prusalink_status_age_seconds 1.500\n"
+    "# HELP dragonbreath_panics_total Panics found at boot (breadcrumb in RTC RAM), kept in NVS. No sample if NVS failed.\n"
+    "# TYPE dragonbreath_panics_total counter\n"
+    "dragonbreath_panics_total 1\n"
+    "# HELP dragonbreath_last_panic_info The last panic breadcrumb as labels. It survives soft resets, not a power cycle.\n"
+    "# TYPE dragonbreath_last_panic_info gauge\n"
+    "dragonbreath_last_panic_info{task=\"pb_control\",kind=\"task_wdt\",pc=\"0x4200abcd\",ra=\"0x42001234\",mcause=\"0x00000018\",reason=\"Task watchdog got \\\"triggered\\\"\",backtrace=\"0x42000010 0x42000020\"} 1\n"
+    "# HELP dragonbreath_airflow_rise_ratio Report-only. Outlet rise / PTC rise over the first 45 s of relay on-time of the last heat start.\n"
+    "# TYPE dragonbreath_airflow_rise_ratio gauge\n"
+    "dragonbreath_airflow_rise_ratio 0.412\n"
+    "# HELP dragonbreath_airflow_rise_samples_total Report-only. Rise ratio samples since boot.\n"
+    "# TYPE dragonbreath_airflow_rise_samples_total counter\n"
+    "dragonbreath_airflow_rise_samples_total 3\n"
+    "# HELP dragonbreath_airflow_ptc_cooldown_seconds Report-only. Last PTC cooldown time constant with the fan on (excess over the chamber to 1/e).\n"
+    "# TYPE dragonbreath_airflow_ptc_cooldown_seconds gauge\n"
+    "dragonbreath_airflow_ptc_cooldown_seconds 95.500\n"
+    "# HELP dragonbreath_airflow_ptc_cooldown_samples_total Report-only. PTC cooldown samples since boot.\n"
+    "# TYPE dragonbreath_airflow_ptc_cooldown_samples_total counter\n"
+    "dragonbreath_airflow_ptc_cooldown_samples_total 2\n"
+    "# HELP dragonbreath_heater_foldback_cuts_total Element foldback cuts since boot. rate() * 3600 gives cycles per hour.\n"
+    "# TYPE dragonbreath_heater_foldback_cuts_total counter\n"
+    "dragonbreath_heater_foldback_cuts_total 4\n"
     "# HELP dragonbreath_http_open_sockets Open client sockets of the HTTP server.\n"
     "# TYPE dragonbreath_http_open_sockets gauge\n"
     "dragonbreath_http_open_sockets 2\n";
@@ -440,6 +538,117 @@ static void test_tick_update(void)
     CHECK(st.interval_max_us == UINT32_MAX);
 }
 
+// Histogram buckets: a tick goes into the first bucket whose bound is not
+// below its duration. Longer than the last bound: only the +Inf bucket.
+static void test_tick_histogram(void)
+{
+    static const uint32_t bounds[PB_METRICS_TICK_BUCKETS] = PB_METRICS_TICK_BUCKET_BOUNDS_US;
+    pb_metrics_tick_state_t st;
+    memset(&st, 0, sizeof st);
+    int64_t t = 1000000;
+    for (unsigned i = 0; i < PB_METRICS_TICK_BUCKETS; i++) {
+        pb_metrics_tick_update(&st, t, t + bounds[i], 0);          // on the bound
+        t += 500000;
+        pb_metrics_tick_update(&st, t, t + bounds[i] + 1, 0);      // 1 us over it
+        t += 500000;
+    }
+    CHECK(st.bucket[0] == 1);                                       // 500 us
+    for (unsigned i = 1; i < PB_METRICS_TICK_BUCKETS; i++)
+        CHECK(st.bucket[i] == 2);                                   // own bound + 1 over the last
+    CHECK(st.ticks == 2 * PB_METRICS_TICK_BUCKETS);                 // 100001 us: +Inf only
+    uint64_t sum = 0;
+    for (unsigned i = 0; i < PB_METRICS_TICK_BUCKETS; i++) sum += 2ull * bounds[i] + 1;
+    CHECK(st.sum_us == sum);
+
+    // The le labels are the bounds in seconds, and the buckets are cumulative.
+    pb_metrics_snapshot_t s;
+    known_snapshot(&s);
+    memcpy(s.tick_bucket, st.bucket, sizeof s.tick_bucket);
+    s.ticks = st.ticks;
+    CHECK(format(&s) > 0);
+    uint64_t cum = 0;
+    for (unsigned i = 0; i < PB_METRICS_TICK_BUCKETS; i++) {
+        cum += st.bucket[i];
+        char want[96];
+        unsigned us = bounds[i];
+        char le[16];
+        snprintf(le, sizeof le, "%u.%06u", us / 1000000u, us % 1000000u);
+        size_t n = strlen(le);
+        while (le[n - 1] == '0') le[--n] = '\0';
+        snprintf(want, sizeof want, "\ndragonbreath_control_tick_seconds_bucket{le=\"%s\"} %llu\n",
+                 le, (unsigned long long)cum);
+        CHECK(strstr(cap.data, want) != NULL);
+    }
+    CHECK(strstr(cap.data, "\ndragonbreath_control_tick_seconds_bucket{le=\"+Inf\"} 16\n") != NULL);
+    CHECK(strstr(cap.data, "\ndragonbreath_control_tick_seconds_count 16\n") != NULL);
+}
+
+static void test_tick_parts(void)
+{
+    uint32_t p[PB_METRICS_TICK_PARTS];
+    // tick 1000 = source 100 + policy tick 700 (heater 500 with sensors 300) + other 200.
+    pb_metrics_tick_split(1000, 100, 700, 500, 300, p);
+    CHECK(p[PB_METRICS_PART_SOURCE] == 100 && p[PB_METRICS_PART_SENSORS] == 300);
+    CHECK(p[PB_METRICS_PART_POLICY] == 200 && p[PB_METRICS_PART_HEATER] == 200);
+    CHECK(p[PB_METRICS_PART_OTHER] == 200);
+    // Spans that do not nest (clock jitter) never give a negative part.
+    pb_metrics_tick_split(500, 300, 400, 450, 470, p);
+    CHECK(p[PB_METRICS_PART_HEATER] == 0 && p[PB_METRICS_PART_POLICY] == 0);
+    CHECK(p[PB_METRICS_PART_SENSORS] == 400 && p[PB_METRICS_PART_OTHER] == 0);
+    pb_metrics_tick_split(1, 2, 3, 4, 5, NULL);                    // no crash
+
+    pb_metrics_tick_state_t st;
+    memset(&st, 0, sizeof st);
+    CHECK(!st.parts_valid);
+    pb_metrics_tick_split(1000, 100, 700, 500, 300, p);
+    pb_metrics_tick_add_parts(&st, p);
+    pb_metrics_tick_add_parts(&st, p);
+    pb_metrics_tick_add_parts(&st, NULL);
+    CHECK(st.parts_valid && st.part_us[PB_METRICS_PART_SENSORS] == 600);
+
+    // No part samples before the first record.
+    pb_metrics_snapshot_t s;
+    known_snapshot(&s);
+    s.tick_parts_valid = false;
+    CHECK(format(&s) > 0);
+    CHECK(strstr(cap.data, "dragonbreath_control_tick_part_seconds_total{") == NULL);
+    CHECK(strstr(cap.data, "# TYPE dragonbreath_control_tick_part_seconds_total counter\n") != NULL);
+}
+
+// Optional diagnostics: no sample (or no family) when the value is not known.
+static void test_optional_diagnostics(void)
+{
+    pb_metrics_snapshot_t s;
+    known_snapshot(&s);
+    s.prusa_valid = false;
+    s.panics_valid = false;
+    s.last_panic_valid = false;
+    s.airflow_rise_permille = PB_METRICS_TEMP_UNKNOWN;
+    s.airflow_cool_tau_ms = 0;
+    CHECK(format(&s) > 0);
+    const char *o = cap.data;
+    CHECK(strstr(o, "prusalink") == NULL);
+    CHECK(strstr(o, "\ndragonbreath_panics_total ") == NULL);
+    CHECK(strstr(o, "\ndragonbreath_last_panic_info{") == NULL);
+    CHECK(strstr(o, "\ndragonbreath_airflow_rise_ratio ") == NULL);
+    CHECK(strstr(o, "\ndragonbreath_airflow_ptc_cooldown_seconds ") == NULL);
+    CHECK(strstr(o, "\ndragonbreath_airflow_rise_samples_total 3\n") != NULL);
+
+    known_snapshot(&s);
+    s.prusa_status_age_ms = UINT32_MAX;     // no status yet
+    s.prusa_state = 1;
+    s.airflow_rise_permille = -37;          // the outlet cooled: a negative ratio
+    s.last_panic.bt_n = 0;                  // no frame pointers: no backtrace
+    s.last_panic.task[0] = '\0';
+    CHECK(format(&s) > 0);
+    o = cap.data;
+    CHECK(strstr(o, "\ndragonbreath_prusalink_state{state=\"connecting\"} 1\n") != NULL);
+    CHECK(strstr(o, "\ndragonbreath_prusalink_status_age_seconds ") == NULL);
+    CHECK(strstr(o, "\ndragonbreath_airflow_rise_ratio -0.037\n") != NULL);
+    CHECK(strstr(o, "{task=\"\",kind=\"task_wdt\",") != NULL);
+    CHECK(strstr(o, ",backtrace=\"\"} 1\n") != NULL);
+}
+
 static void test_tenths(void)
 {
     CHECK(pb_metrics_tenths(36.24f) == 362);
@@ -483,6 +692,20 @@ static void worst_case_snapshot(pb_metrics_snapshot_t *s)
     s->idf_version = "v5.3.6-dirty-abcdefghijklmnopqr";
     s->rssi_dbm = -128;
     s->http_sockets = INT16_MAX;
+    for (int i = 0; i < PB_METRICS_TICK_BUCKETS; i++) s->tick_bucket[i] = UINT32_MAX;
+    s->tick_sum_us = UINT64_MAX;
+    for (int i = 0; i < PB_METRICS_TICK_PARTS; i++) s->tick_part_us[i] = UINT64_MAX;
+    s->alloc_failures = s->alloc_failure_last_bytes = s->wifi_disconnects = UINT32_MAX;
+    s->wifi_last_reason = UINT16_MAX;
+    s->prusa_status_age_ms = UINT32_MAX - 1;
+    s->panics = UINT32_MAX;
+    memset(s->last_panic.task, 'T', sizeof s->last_panic.task - 1);
+    memset(s->last_panic.reason, '"', sizeof s->last_panic.reason - 1);   // each one escaped
+    s->last_panic.bt_n = PB_PANIC_BT_DEPTH;
+    for (int i = 0; i < PB_PANIC_BT_DEPTH; i++) s->last_panic.bt[i] = UINT32_MAX;
+    s->airflow_rise_permille = INT32_MIN + 1;
+    s->airflow_rise_samples = s->airflow_cool_tau_ms = s->airflow_cool_samples = UINT32_MAX;
+    s->foldback_cuts = UINT32_MAX;
 }
 
 static void test_worst_case_size(void)
@@ -532,6 +755,9 @@ int main(int argc, char **argv)
     test_state_sets_and_ranges();
     test_add_task();
     test_tick_update();
+    test_tick_histogram();
+    test_tick_parts();
+    test_optional_diagnostics();
     test_tenths();
     test_worst_case_size();
     printf("pb_metrics_fmt host test: PASS\n");

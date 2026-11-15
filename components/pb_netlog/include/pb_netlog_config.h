@@ -23,6 +23,8 @@ void pb_netlog_config_default(pb_netlog_config_t *out);
 // True if host is "" (off) or a host name or an IPv4 address: a maximum of
 // PB_NETLOG_HOST_MAX characters, labels of 1 to 63 letters, digits and
 // hyphens, separated by dots. A label does not start or end with a hyphen.
+// If each label is a number (lwIP reads "1.2.3" as the address 1.2.0.3), the
+// text must be a dotted quad: 4 decimal octets 0 to 255, no leading zeros.
 bool pb_netlog_host_valid(const char *host);
 
 // True if all fields of cfg are valid (host names and a port that is not 0).

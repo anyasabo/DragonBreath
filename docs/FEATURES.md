@@ -197,7 +197,7 @@ watchdog.
   download. Zero device RAM.
 - **Syslog** (optional): set a syslog server in Setup ("Syslog and time") and the
   device sends its log as RFC 5424 over UDP (for example to Grafana Alloy,
-  rsyslog or syslog-ng). An optional NTP server (or the one from DHCP) gives the
+  rsyslog or syslog-ng). An optional NTP server (else the one from DHCP) gives the
   log lines a timestamp. The wall clock is never used for control or safety.
 - **`/console`** — terminal-style viewer of the firmware `ESP_LOGx` ring (boot log
   included) with auto-refresh and `.txt` download; useful on no-USB hardware where the

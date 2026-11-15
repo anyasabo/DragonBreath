@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "dc_syslog.h"
+#include "dc_syslog_format.h"   // DC_SYSLOG_HOSTNAME_MAX
 #include "dc_time.h"
 #include "dc_wifi.h"
 #include "esp_log.h"
@@ -19,9 +20,11 @@ static const char *TAG = "pb_netlog";
 
 #define APP_NAME      "dragonbreath"
 
-// Written once by pb_netlog_start() in app_main, read by the metrics handler.
+// Written once at boot by app_main, read by the metrics handler.
 static volatile bool s_time_started;
 static volatile bool s_syslog_started;
+// The settings that pb_netlog_start_time() read, for pb_netlog_start_syslog().
+static pb_netlog_config_t s_cfg;
 
 // Read one host string. If the key is missing or the value is not valid, the
 // field keeps its default ("").
@@ -64,24 +67,23 @@ esp_err_t pb_netlog_set_config(const pb_netlog_config_t *cfg)
     return err;
 }
 
-void pb_netlog_start(void)
+void pb_netlog_start_time(void)
 {
-    pb_netlog_config_t cfg;
-    esp_err_t err = pb_netlog_get_config(&cfg);
+    esp_err_t err = pb_netlog_get_config(&s_cfg);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "could not read the settings: %s (syslog and NTP off)",
                  esp_err_to_name(err));
-    const bool syslog_on = cfg.syslog_host[0] != '\0';
-    if (!syslog_on && !cfg.ntp_host[0]) {
+    if (!s_cfg.syslog_host[0] && !s_cfg.ntp_host[0]) {
         ESP_LOGI(TAG, "syslog off, NTP off");
         return;
     }
 
-    // The clock first: the syslog timestamp callback reads it. DHCP option 42
-    // is always on. ntp_host, if set, is the second server.
+    // One source only: ntp_host if it is set, else the server from DHCP. A
+    // DHCP reply with option 42 replaces all SNTP servers, so with both, a
+    // renewal can remove ntp_host until the next reconnect.
     const dc_time_config_t time_cfg = {
-        .server = cfg.ntp_host,
-        .use_dhcp = true,
+        .server = s_cfg.ntp_host,
+        .use_dhcp = !s_cfg.ntp_host[0],
     };
     err = dc_time_start(&time_cfg);
     if (err == ESP_OK)
@@ -89,19 +91,30 @@ void pb_netlog_start(void)
     else
         ESP_LOGW(TAG, "dc_time_start: %s (log lines have no timestamp)",
                  esp_err_to_name(err));
+}
 
-    if (!syslog_on) return;
-    char hostname[33] = {0};
+void pb_netlog_start_syslog(void)
+{
+    if (!s_cfg.syslog_host[0]) return;
+    // In the setup portal, the station does not retry in this boot, so the
+    // queue only fills. In the AP-off failed-join state the reconnect timer
+    // can still bring the station up, so syslog starts.
+    if (dc_wifi_state() == DC_WIFI_STATE_AP_PORTAL) {
+        ESP_LOGI(TAG, "setup portal active: syslog not started");
+        return;
+    }
+    // dc_wifi_get_hostname() needs 33 bytes. dc_syslog keeps 63 characters.
+    char hostname[DC_SYSLOG_HOSTNAME_MAX + 1] = {0};
     if (dc_wifi_get_hostname(hostname, sizeof hostname) != ESP_OK)
         hostname[0] = '\0';   // dc_syslog writes "-"
     const dc_syslog_config_t syslog_cfg = {
-        .server = cfg.syslog_host,
-        .port = cfg.syslog_port,
+        .server = s_cfg.syslog_host,
+        .port = s_cfg.syslog_port,
         .app_name = APP_NAME,
         .hostname = hostname,
         .timestamp = dc_time_format_now,
     };
-    err = dc_syslog_start(&syslog_cfg);
+    esp_err_t err = dc_syslog_start(&syslog_cfg);
     if (err == ESP_OK)
         s_syslog_started = true;
     else

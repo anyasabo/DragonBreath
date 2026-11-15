@@ -531,7 +531,7 @@ void app_main(void)
     if ((e = dc_wifi_start()) != ESP_OK)
         ESP_LOGE(TAG, "dc_wifi_start: %s (continuing; safety loop unaffected)", esp_err_to_name(e));
     else
-        pb_netlog_start();   // syslog + SNTP: log timestamps only, never control
+        pb_netlog_start_time();   // SNTP: log timestamps only, never control
     // ESP-NOW peer provider: broadcast our heater capability for consumers (DragonVent).
     // Advisory only; non-fatal like the rest of network bring-up.
     if ((e = pb_peer_start()) != ESP_OK)
@@ -600,6 +600,9 @@ void app_main(void)
     }
     if ((e = db_portal_start()) != ESP_OK)
         ESP_LOGE(TAG, "db_portal_start: %s (continuing)", esp_err_to_name(e));
+    // Syslog after httpd_start(): its ~8 KB of buffers must not take the boot heap
+    // that the HTTP server needs.
+    pb_netlog_start_syslog();
 
     s_net_up = true;
     ESP_LOGI(TAG, "network bring-up done (wifi + moonraker + http api + portal, best-effort)");

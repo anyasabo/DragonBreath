@@ -341,7 +341,7 @@ Rules:
 | `dragonbreath_http_open_sockets` | gauge | | Open client sockets of the HTTP server (`httpd_get_client_list`). |
 | `dragonbreath_syslog_enabled` | gauge | | 1 if the device sends its log to a syslog server (`sl_host` is set and `dc_syslog` started). |
 | `dragonbreath_syslog_sent_total` | counter | | Syslog datagrams that `sendto()` accepted. UDP has no acknowledgement, so the server can receive fewer. |
-| `dragonbreath_syslog_dropped_total` | counter | | Log lines dropped because the syslog queue (16 lines) was full, for example before the station had an address. |
+| `dragonbreath_syslog_dropped_total` | counter | | Log lines dropped because the syslog queue (16 lines) was full, for example during a burst of log lines or while the station has no address. |
 | `dragonbreath_syslog_send_errors_total` | counter | | Failed `sendto()` calls and failed server address lookups. |
 | `dragonbreath_syslog_queue_lines` | gauge | | Log lines in the syslog queue now. |
 | `dragonbreath_time_synced` | gauge | | 1 after the first SNTP sync. It stays 1 until reboot. The wall clock gives only log timestamps. |
@@ -438,11 +438,15 @@ These predate/sit beside the versioned control surface and are stable:
     maximum). `""` (the default) turns syslog off.
   - `sl_port`: the UDP port of the syslog server, 1–65535 (default 514). An
     empty string keeps the saved port.
-  - `ntp_host`: an NTP server, a host name or an IPv4 address. `""` (the
-    default) means only the NTP server from DHCP (option 42).
+  - `ntp_host`: an NTP server, a host name or an IPv4 address. If it is set,
+    SNTP uses only this server. `""` (the default) means the NTP server from
+    DHCP (option 42).
 
   The device validates the fields before it saves any field. A host name has
-  labels of letters, digits and hyphens, separated by dots. If a field is not
+  labels of letters, digits and hyphens, separated by dots. The device reads a
+  text of only numbers as an address (`1.2.3` is 1.2.0.3). If all labels are
+  numbers, the field must have 4 decimal octets 0–255 without leading zeros.
+  If a field is not
   valid, the response is HTTP 400 and names the field. The values are in NVS
   (`app_nvs`: `sl_host`, `sl_port`, `ntp_host`). They apply after a restart.
   A factory reset erases them.
@@ -453,9 +457,15 @@ These predate/sit beside the versioned control surface and are stable:
   uptime in ms). A gap in `seq` shows dropped lines. If `sl_host` or `ntp_host`
   is set, SNTP runs. The wall clock gives only the syslog TIMESTAMP. Before the
   first sync, TIMESTAMP is `-`. Nothing that is related to safety or control
-  uses the wall clock. SNTP gets the NTP server from DHCP only from the first
-  DHCP renewal or reconnect after boot. If the timestamps are important, set
-  `ntp_host`.
+  uses the wall clock. The device does not combine `ntp_host` with the DHCP
+  server: a DHCP reply with option 42 replaces all SNTP servers. Syslog starts
+  after the HTTP server. If the device is in the setup portal (no station in
+  this boot), syslog does not start.
+
+  DHCP-only limit: the device has its first lease before SNTP starts. With the
+  current dragon-core, SNTP gets the server from DHCP only at the next DHCP
+  renewal (often half the lease time) or reconnect. If the timestamps are
+  important, set `ntp_host`.
 - `GET /api/v2/calibration` — the per-channel temperature calibration offsets plus
   their bounds and the live readings:
   `{"api_version":2,"chamber_offset_c","ptc_offset_c","min":-5,"max":5,"chamber_c","ptc_c","chamber_raw_c","ptc_raw_c"}`.

@@ -218,6 +218,25 @@ int main(void)
     assert(!pb_netlog_host_valid("a_b"));
     assert(!pb_netlog_host_valid("a:514"));
     assert(!pb_netlog_host_valid("a\nb"));
+    // All labels numeric: lwIP reads an address, so only a dotted quad is valid.
+    assert(pb_netlog_host_valid("0.0.0.0"));
+    assert(pb_netlog_host_valid("255.255.255.255"));
+    assert(pb_netlog_host_valid("192.168.10.2"));
+    assert(!pb_netlog_host_valid("1.2.3"));
+    assert(!pb_netlog_host_valid("1.2.3.4.5"));
+    assert(!pb_netlog_host_valid("123"));
+    assert(!pb_netlog_host_valid("256.1.1.1"));
+    assert(!pb_netlog_host_valid("1.2.3.999"));
+    assert(!pb_netlog_host_valid("010.0.0.1"));
+    assert(!pb_netlog_host_valid("0x7f.1"));
+    assert(!pb_netlog_host_valid("0x7f.0.0.1"));
+    assert(!pb_netlog_host_valid("0x7f"));
+    // A name with one non-numeric label stays a name.
+    assert(pb_netlog_host_valid("host.123"));
+    assert(pb_netlog_host_valid("1.2.example"));
+    assert(pb_netlog_host_valid("0x7g"));
+    assert(!pb_netlog_host_valid("0x"));   // ipaddr_aton() reads it as 0
+    assert(pb_netlog_host_valid("1-2.3.4.5"));
     pb_netlog_config_t cfg;
     pb_netlog_config_default(&cfg);
     assert(pb_netlog_config_valid(&cfg) && cfg.syslog_port == 514 &&

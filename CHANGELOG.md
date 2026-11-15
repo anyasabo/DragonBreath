@@ -28,14 +28,14 @@ below into the GitHub Release notes.
   `sl_host`, `sl_port` and `ntp_host` of `POST /api/v1/provisioning/product`).
   If a syslog server is set, the device sends its ESP-IDF log as RFC 5424 over
   UDP (dragon-core `dc_syslog`, APP-NAME `dragonbreath`). The default is off.
-  SNTP (dragon-core `dc_time`) gives the log lines a UTC timestamp. It uses the
-  NTP server from DHCP. If `ntp_host` is set, SNTP also uses that server. The
-  default `ntp_host` is empty. Nothing related to safety or control uses the wall clock. A change
-  applies after a restart. With syslog on, the heap use increases by
-  approximately 8 KB. See `docs/api-v2.md`.
-- `sdkconfig.defaults` sets `CONFIG_LWIP_DHCP_GET_NTP_SRV=y` and
-  `CONFIG_LWIP_SNTP_MAX_SERVERS=2` for the NTP server from DHCP and a second
-  server.
+  SNTP (dragon-core `dc_time`) gives the log lines a UTC timestamp. If
+  `ntp_host` is set, SNTP uses only that server. If `ntp_host` is empty (the
+  default), SNTP uses the NTP server from DHCP. Nothing related to safety or
+  control uses the wall clock. A change applies after a restart. Syslog starts
+  after the HTTP server. In the setup portal, syslog does not start. With syslog
+  on, the heap use increases by approximately 8 KB. See `docs/api-v2.md`.
+- `sdkconfig.defaults` sets `CONFIG_LWIP_DHCP_GET_NTP_SRV=y` for the NTP server
+  from DHCP.
 - `sdkconfig.defaults` turns on the FreeRTOS trace facility and the run-time
   stats (64-bit counter) for the per-task metrics. Static DRAM use increases by
   approximately 1.7 KB.

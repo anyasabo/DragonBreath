@@ -158,6 +158,11 @@ below into the GitHub Release notes.
 - `POST /api/v2/presets` and `POST /api/v2/bambu/scan` now require the
   `X-DragonBreath-Auth` header, like the other mutating routes. This stops a CSRF
   change of the presets from a web page.
+- After an auth error (403 `auth_failed` or `token_required`, 429
+  `auth_locked`), the device closes the connection. Before, the HTTP server
+  read and discarded the unread body, with no time limit and no limit on
+  `Content-Length`. A client with no token, a large `Content-Length` and one
+  byte for each 4.9 s then blocked the web server.
 - `POST /api/v2/token` accepts only 1-64 printable ASCII characters (0x21-0x7E).
 
 ## [1.1.19] - 2026-09-23

@@ -29,7 +29,10 @@
 #include "freertos/task.h"
 #include "riscv/rvruntime-frames.h"
 #if CONFIG_ESP_SYSTEM_USE_FRAME_POINTER
-#include "esp_private/fp_unwind.h"
+// ESP-IDF v6.x esp_system/fp_unwind.c. No header declares it: the heap tracer
+// (heap/include/heap_trace.inc) declares it the same way. It checks that each
+// frame pointer is in data RAM and stops at ROM code.
+extern uint32_t esp_fp_get_callers(uint32_t frame, void **callers, void **stacks, uint32_t depth);
 #endif
 
 _Static_assert(PANIC_EXCEPTION_DEBUG == PB_PANIC_KIND_DEBUG &&

@@ -7,6 +7,11 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Changed
+- The replay cache of `POST /api/v2/command` keeps its two responses on the
+  heap, not in a fixed 6.4 KB static buffer. This gives 6.1 KB of RAM back
+  before the first command. A cached response is not cut at 3 KB any more.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

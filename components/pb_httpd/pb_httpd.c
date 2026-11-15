@@ -323,8 +323,9 @@ bool pb_httpd_read_body(httpd_req_t *req, char *buf, size_t len)
 }
 
 // The handlers of the routes from pb_httpd_register_route(). ROUTES_MAX must
-// be at least the number of product routes (27 now).
-#define ROUTES_MAX 32
+// be at least the number of product routes: 27 on upstream main, 28 on the
+// fork (anya adds /metrics). The margin is for new routes.
+#define ROUTES_MAX 48
 typedef struct {
     esp_err_t (*handler)(httpd_req_t *req);
     void *user_ctx;
@@ -1360,6 +1361,9 @@ esp_err_t pb_httpd_register(httpd_handle_t server)
 {
     if (!server) return ESP_ERR_INVALID_ARG;
     s_server = server;
+    // A new server (or a new fuzz input) starts with an empty route table.
+    // The db_portal routes come after this call.
+    s_route_count = 0;
 
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -1389,26 +1393,19 @@ esp_err_t pb_httpd_register(httpd_handle_t server)
     httpd_uri_t zonp   = { .uri = "/api/v2/zones",       .method = HTTP_POST, .handler = zones_post };
     httpd_uri_t hmg    = { .uri = "/api/v2/heater_method", .method = HTTP_GET,  .handler = heater_method_get };
     httpd_uri_t hmp    = { .uri = "/api/v2/heater_method", .method = HTTP_POST, .handler = heater_method_post };
-    pb_httpd_register_route(s_server, &info);
-    pb_httpd_register_route(s_server, &state);
-    pb_httpd_register_route(s_server, &cmd);
-    pb_httpd_register_route(s_server, &hb);
-    pb_httpd_register_route(s_server, &events);
-    pb_httpd_register_route(s_server, &health);
-    pb_httpd_register_route(s_server, &setg);
-    pb_httpd_register_route(s_server, &setp);
-    pb_httpd_register_route(s_server, &logs);
-    pb_httpd_register_route(s_server, &cons);
-    pb_httpd_register_route(s_server, &rst);
-    pb_httpd_register_route(s_server, &booti);
-    pb_httpd_register_route(s_server, &frst);
-    pb_httpd_register_route(s_server, &tok);
-    pb_httpd_register_route(s_server, &calg);
-    pb_httpd_register_route(s_server, &calp);
-    pb_httpd_register_route(s_server, &zong);
-    pb_httpd_register_route(s_server, &zonp);
-    pb_httpd_register_route(s_server, &hmg);
-    pb_httpd_register_route(s_server, &hmp);
+    const httpd_uri_t *routes[] = {
+        &info, &state, &cmd, &hb, &events,
+        &health, &setg, &setp, &logs, &cons,
+        &rst, &booti, &frst, &tok, &calg,
+        &calp, &zong, &zonp, &hmg, &hmp,
+    };
+    for (size_t i = 0; i < sizeof routes / sizeof routes[0]; i++) {
+        esp_err_t err = pb_httpd_register_route(s_server, routes[i]);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "register %s: %s", routes[i]->uri, esp_err_to_name(err));
+            return err;
+        }
+    }
     ESP_LOGI(TAG, "HTTP API v2 registered (shared portal owns HTTP, provisioning and OTA)");
     return ESP_OK;
 }

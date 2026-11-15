@@ -65,7 +65,9 @@ grep -q 'if(ui.schema!=null && ui.schema!==1) return' "$portal" # unknown UI sch
 grep -q "command('auto', {target_c:fields.autoT.val" "$portal"         # auto sends the user's target+threshold
 grep -q "command('drying_start', {target_c:fields.dryT.val" "$portal"  # dry sends the user's target+hours
 grep -q "Rejected: '+" "$portal"                     # command rejection surfaced to the user
-grep -q 'strcmp(s_replay\[i\].actor_id, actor_id)' "$httpd"
+# The command replay cache is keyed by the actor id and the request id.
+grep -q 'strcmp(e->actor_id, actor_id)' "$root/components/pb_httpd/pb_httpd_replay.c"
+grep -q 'pb_replay_find(&s_replay, actor_id_buf, request_id)' "$httpd"
 
 # Remembered mode parameters must stay in the authoritative snapshot and state
 # document: the dashboard pre-fills from them and buttons re-arm from them.

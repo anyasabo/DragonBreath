@@ -164,6 +164,7 @@ change its password.
 | Syslog + NTP (`pb_netlog`) | Optional RFC 5424 syslog over UDP (`dc_syslog`) with SNTP log timestamps (`dc_time`); set the server in Setup → "Syslog and time" (empty = off). Needs a hardware check. |
 | Smoke test (`tools/smoke.py`) | Attended release check over API v2 after an OTA install: read-only state, heat on/off, comms-watchdog trip, fault persistence over a reboot, panic-off. Runs in CI against a mock server. `python3 tools/smoke.py HOST --token TOKEN` — see [`docs/SMOKE_TEST.md`](docs/SMOKE_TEST.md) |
 | Diagnostics (`tools/diag.py`) | ✅ Read-only 2 Hz logger (chamber/PTC/SSR/mode/fault + resolved Rref) → live view + CSV; run during a heat cycle to capture behavior. `python3 tools/diag.py [host] [token]` |
+| Captures (`tools/capture.py`, `tools/analyze_capture.py`) | Scenario recorder (read-only by default), offline analysis (first heat, sensor agreement, airflow, PID fit) and replay. See [`docs/CAPTURES.md`](docs/CAPTURES.md) |
 
 **Shared-core boundary:** board-agnostic infrastructure is consumed from the pinned
 [`dragon-core`](https://github.com/justinh-rahb/dragon-core) revision declared in

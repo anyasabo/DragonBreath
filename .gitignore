@@ -27,3 +27,6 @@ backups/
 
 # Serial HIL transcripts and reports
 hil-results/
+
+# Heater captures written by tools/capture.py (copy one to tests/captures/ to keep it)
+captures/

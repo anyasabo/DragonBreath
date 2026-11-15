@@ -63,7 +63,13 @@ below into the GitHub Release notes.
   path sends OFF and checks that the relay is off.
   `tests/test_smoke.py` runs it in CI against a mock API v2 server. See
   `docs/SMOKE_TEST.md`.
-
+- Capture kit for hardware tests (tools only, no firmware change): `tools/capture.py`
+  records named scenarios (`idle`, `first-heat`, `step`, `cooldown`, `soak`), read-only
+  unless `--allow-control --token` is given. `tools/analyze_capture.py` computes the
+  first-heat rise, cold sensor agreement, airflow signs, a PID fit and control health.
+  `tools/replay_capture.py` checks a capture against the safety invariants and a model
+  of the bang-bang tick. `tools/priors.py` prints the expected values. See
+  `docs/CAPTURES.md`.
 ### Changed
 - The firmware also builds with ESP-IDF v6.1. Release builds continue to use
   the version in `.idf-version` (v5.3.6). ESP-IDF 6 builds get cJSON from the component registry and

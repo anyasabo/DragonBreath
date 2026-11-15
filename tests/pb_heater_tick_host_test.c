@@ -1189,6 +1189,233 @@ static void t_partial_clear_phase2(void)
     CHECK(pb_heater_fault_code() == PB_FAULT_EMERGENCY);
 }
 
+// --- metrics counters (pb_heater_get_counters) ---------------------------------
+
+static pb_heater_counters_t counters(void)
+{
+    pb_heater_counters_t c;
+    memset(&c, 0xA5, sizeof c);
+    env->ctx = CTX_OTHER;
+    pb_heater_get_counters(&c);
+    env_check_quiescent();
+    return c;
+}
+
+static uint32_t trips_total(const pb_heater_counters_t *c)
+{
+    uint32_t n = 0;
+    for (int i = 0; i < PB_FAULT__COUNT; ++i) n += c->trips[i];
+    return n;
+}
+
+#define CHECK_TRIPS(c, code, n) \
+    CHECKF((c).trips[code] == (n), "trips[%s] = %u, want %u", #code, \
+           (unsigned)(c).trips[code], (unsigned)(n))
+
+// Phase 1: a held over-temperature counts once, however many ticks it holds.
+static void t_counters_held_trip_phase1(void)
+{
+    start_heating(60.0f);
+    pb_heater_counters_t c = counters();
+    CHECK(trips_total(&c) == 0 && c.panic_offs == 0);
+    sensors(40.0f, 110.0f);
+    expect_trip(PB_FAULT_PTC_OVERTEMP, true);
+    for (int i = 0; i < 10; ++i) { advance_ms(500); tick(); }
+    c = counters();
+    CHECK_TRIPS(c, PB_FAULT_PTC_OVERTEMP, 1);
+    CHECK(trips_total(&c) == 1);
+}
+
+// Phase 2 (reboot, NVS kept): the restore of the persisted latch does not
+// count. A hazard that is still present trips live and counts once.
+static void t_counters_restore_phase2(void)
+{
+    boot();
+    CHECK(pb_heater_is_faulted());
+    CHECK(pb_heater_fault_code() == PB_FAULT_PTC_OVERTEMP);
+    pb_heater_counters_t c = counters();
+    CHECKF(trips_total(&c) == 0, "boot restore counted %u trips", (unsigned)trips_total(&c));
+    sensors(25.0f, 25.0f);
+    for (int i = 0; i < 4; ++i) { advance_ms(500); tick(); }
+    c = counters();
+    CHECK(trips_total(&c) == 0);              // restored latch, no live hazard
+    sensors(40.0f, 110.0f);
+    for (int i = 0; i < 4; ++i) { advance_ms(500); tick(); }
+    c = counters();
+    CHECK_TRIPS(c, PB_FAULT_PTC_OVERTEMP, 1);
+    CHECK(trips_total(&c) == 1);
+}
+
+// A new cause during an active latch counts. A repeated cause does not.
+static void t_counters_new_cause_during_latch(void)
+{
+    start_heating(60.0f);
+    env->ctx = CTX_OTHER;
+    pb_heater_request_panic_off("button");
+    tick();
+    pb_heater_counters_t c = counters();
+    CHECK(c.panic_offs == 1 && trips_total(&c) == 0);   // panic-off has its own counter
+    sensors(40.0f, 110.0f);                    // hazard while the panic latch is active
+    tick();
+    c = counters();
+    CHECK_TRIPS(c, PB_FAULT_PTC_OVERTEMP, 1);
+    // A second panic-off rewrites the cause. The PTC trip on the next tick is
+    // the same cause in the same episode: it does not count again.
+    pb_heater_request_panic_off(NULL);
+    tick();
+    tick();
+    c = counters();
+    CHECK(c.panic_offs == 2);
+    CHECK_TRIPS(c, PB_FAULT_PTC_OVERTEMP, 1);
+    // A third cause in the same episode.
+    env->ctx = CTX_CONTROL;
+    pb_heater_emergency_off("policy watchdog");
+    pb_heater_emergency_off("policy watchdog");
+    env->ctx = CTX_OTHER;
+    c = counters();
+    CHECK_TRIPS(c, PB_FAULT_EMERGENCY, 1);
+    CHECK(trips_total(&c) == 2);
+}
+
+// A successful clear starts a new episode. A failed clear does not.
+static void t_counters_clear_episode(void)
+{
+    start_heating(60.0f);
+    sensors(40.0f, 110.0f);
+    expect_trip(PB_FAULT_PTC_OVERTEMP, true);
+    CHECK_TRIPS(counters(), PB_FAULT_PTC_OVERTEMP, 1);
+
+    // Failed clears: the latch stays, the held hazard does not count again.
+    env->nvs_fail_set = ESP_FAIL;
+    CHECK(clear_fault() == ESP_FAIL);
+    env->nvs_fail_set = 0;
+    env->nvs_fail_open_rw = ESP_ERR_NVS_NOT_INITIALIZED;
+    CHECK(clear_fault() == ESP_ERR_NVS_NOT_INITIALIZED);
+    env->nvs_fail_open_rw = 0;
+    CHECK(pb_heater_is_faulted());
+    for (int i = 0; i < 4; ++i) { advance_ms(500); tick(); }
+    CHECK_TRIPS(counters(), PB_FAULT_PTC_OVERTEMP, 1);
+
+    // Successful clear while still hot: the next tick is a new episode.
+    CHECK(clear_fault() == ESP_OK);
+    expect_trip(PB_FAULT_PTC_OVERTEMP, true);
+    for (int i = 0; i < 4; ++i) { advance_ms(500); tick(); }
+    CHECK_TRIPS(counters(), PB_FAULT_PTC_OVERTEMP, 2);
+
+    // Cool down, clear, heat again, trip again: a third episode.
+    sensors(30.0f, 40.0f);
+    tick();
+    CHECK(clear_fault() == ESP_OK);
+    link_alive();
+    CHECK(set_target(60.0f) == ESP_OK);
+    tick(); CHECK(relay() == 1);
+    sensors(40.0f, 110.0f);
+    expect_trip(PB_FAULT_PTC_OVERTEMP, true);
+    pb_heater_counters_t c = counters();
+    CHECK_TRIPS(c, PB_FAULT_PTC_OVERTEMP, 3);
+    CHECK(trips_total(&c) == 3);
+}
+
+// Each panic-off request counts: while heating, while latched, while idle.
+static void t_counters_panic_each_request(void)
+{
+    boot();
+    env->ctx = CTX_OTHER;
+    pb_heater_request_panic_off(NULL);        // idle, not heating
+    CHECK(counters().panic_offs == 1);
+    pb_heater_request_panic_off(NULL);        // already latched
+    pb_heater_request_panic_off(NULL);
+    tick();
+    CHECK(clear_fault() == ESP_OK);
+    pb_heater_request_panic_off(NULL);        // after a clear
+    pb_heater_counters_t c = counters();
+    CHECK(c.panic_offs == 4);
+    CHECK(trips_total(&c) == 0);
+}
+
+// Relay on-time: exact values, and never a decrease between two reads, also
+// at the same clock value as a relay change.
+static uint64_t last_on_us;
+
+static uint64_t on_us(void)
+{
+    uint64_t v = counters().relay_on_us;
+    CHECKF(v >= last_on_us, "relay on-time decreased: %llu -> %llu",
+           (unsigned long long)last_on_us, (unsigned long long)v);
+    last_on_us = v;
+    return v;
+}
+
+static void t_counters_relay_on_time(void)
+{
+    last_on_us = 0;
+    boot();
+    sensors(30.0f, 60.0f);
+    link_alive();
+    CHECK(on_us() == 0);
+    CHECK(set_target(60.0f) == ESP_OK);
+    tick(); CHECK(relay() == 1);              // on at t0
+    CHECK(on_us() == 0);                      // same clock value: open period 0
+    advance_ms(500);
+    CHECK(on_us() == 500000);
+    link_alive();
+    tick(); CHECK(relay() == 1);              // still on
+    CHECK(on_us() == 500000);
+    CHECK(set_target(0.0f) == ESP_OK);
+    tick(); CHECK(relay() == 0);              // off at t0 + 500 ms
+    CHECK(on_us() == 500000);
+    advance_ms(1000);
+    CHECK(on_us() == 500000);                 // off time does not count
+    link_alive();
+    CHECK(set_target(60.0f) == ESP_OK);
+    tick(); CHECK(relay() == 1);              // on at t0 + 1500 ms
+    CHECK(on_us() == 500000);
+    advance_ms(250);
+    CHECK(on_us() == 750000);
+    // Many toggles every 100 ms, with a read before and after each tick at the
+    // same clock value. The relay is on in each 100 ms step that starts on.
+    uint64_t want = 750000;
+    for (int i = 0; i < 20; ++i) {
+        bool was_on = relay() == 1;
+        advance_ms(100);
+        if (was_on) want += 100000;
+        link_alive();
+        CHECK(set_target((i & 1) ? 60.0f : 0.0f) == ESP_OK);
+        CHECK(on_us() == want);
+        tick();
+        CHECK(relay() == (i & 1));
+        CHECK(on_us() == want);
+    }
+    CHECK(want == 750000 + 100000 + 9 * 100000);   // 10 on steps of 100 ms
+}
+
+// The control task turns the relay on between the clock read and the lock of
+// a reader (a task switch). The open period must not be negative.
+static void relay_on_hook(void)
+{
+    advance_ms(1);
+    link_alive();
+    CHECK(set_target(60.0f) == ESP_OK);
+    tick();
+    CHECK(relay() == 1);
+}
+
+static void t_counters_relay_on_race(void)
+{
+    last_on_us = 0;
+    start_heating(60.0f);                     // on at t0
+    advance_ms(300);
+    CHECK(set_target(0.0f) == ESP_OK);
+    tick(); CHECK(relay() == 0);              // 300 ms on
+    advance_ms(200);
+    CHECK(on_us() == 300000);
+    env->before_crit_hook = relay_on_hook;    // the switch occurs inside the next read
+    CHECK(on_us() == 300000);
+    CHECK(env->before_crit_hook == NULL);
+    advance_ms(100);
+    CHECK(on_us() == 400000);
+}
+
 int main(int argc, char **argv)
 {
     env_init();
@@ -1275,6 +1502,13 @@ int main(int argc, char **argv)
         RUN(t_partial_clear_retry_restores_cause);
         RUN(t_partial_clear_second_set_fails);
         RUN_KEEP(t_partial_clear_phase2);
+        RUN(t_counters_held_trip_phase1);
+        RUN_KEEP(t_counters_restore_phase2);
+        RUN(t_counters_new_cause_during_latch);
+        RUN(t_counters_clear_episode);
+        RUN(t_counters_panic_each_request);
+        RUN(t_counters_relay_on_time);
+        RUN(t_counters_relay_on_race);
     }
 
     ok &= heater_random_test();

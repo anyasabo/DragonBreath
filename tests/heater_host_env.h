@@ -62,6 +62,7 @@ typedef struct {
     int sem_held;
     bool sem_contended;          // a zero-wait take fails (another task holds it)
     void (*after_give_hook)(void);   // one-shot: runs after the next mutex give
+    void (*before_crit_hook)(void);  // one-shot: runs before the next outermost critical enter
 
     // NVS ("app_nvs" is the only namespace the code under test uses). Like ESP-IDF
     // v5.3, each nvs_set_* writes through to flash at once. nvs_commit() writes

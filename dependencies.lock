@@ -12,7 +12,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_bambu
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_evlog:
     component_hash: 68a4d74f5e1b1f8d3457ee7cc2945538d15e18b58157554287ba55b7ace10973
     dependencies:
@@ -22,7 +22,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_evlog
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_moonraker:
     component_hash: c48f0d23ea09ac5b86c7b2097cab1e8e583369bbf66a35031c012afc2bd460fc
     dependencies:
@@ -38,7 +38,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_moonraker
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_mqtt:
     component_hash: e69d2eee819b4bc4cac201b7d1d79c6ad0b1f7d20ae84b68134df785d228343b
     dependencies:
@@ -52,7 +52,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_mqtt
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_peer:
     component_hash: c8caf7bb12dc7d6c59ccc1555e789ea3a5e561136092902f979fde1688aacc12
     dependencies:
@@ -62,7 +62,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_peer
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_pid:
     component_hash: bd6660d68e12024c047fc8fe12b28c4bc24d18e412bd6f84b7c10ce84a24d107
     dependencies:
@@ -72,9 +72,9 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_pid
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_portal:
-    component_hash: 775f71eb5e9fd27763ed0ced05b022dbb4c00ce8146d03004804149e2eb3e2fe
+    component_hash: 41c9f11e5ebf168c679dbe30fdcb08cd152f9d2b9fcab5c274c676ee2803fcc2
     dependencies:
     - name: idf
       version: '>=5.3'
@@ -87,7 +87,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_portal
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_prusa:
     component_hash: e125fdc25183b3af0dbfe0d9cb613ab4ff5d150e04e2e02543cf1fbf99a4afc5
     dependencies:
@@ -102,7 +102,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_prusa
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_source:
     component_hash: c124358f61bb7a775679ef74016ced0e8aafb7bd06883b8da1e9e38942f20001
     dependencies:
@@ -112,7 +112,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_source
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_syslog:
     component_hash: 538c4c58ef7c97761bc570dfbc10a9fbf2dbb5f991bf82c511015fc8dbaaca40
     dependencies:
@@ -122,7 +122,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_syslog
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_time:
     component_hash: 76296fa92bb78fad3b266d83127ca937b076447a4dbd062047e06b727bccc9d1
     dependencies:
@@ -132,7 +132,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_time
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_ui:
     component_hash: 2b1ad122d701d0f81d4613680dd052eae48d57e5b10354278b3ab3c09a8cd5f6
     dependencies:
@@ -142,7 +142,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_ui
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   dc_wifi:
     component_hash: fa694ae0426c467688da5803d956436864de536dc6a78d1f1f1fb5cbb9b18ccb
     dependencies:
@@ -154,7 +154,7 @@ dependencies:
       git: https://github.com/anyasabo/dragon-core.git
       path: components/dc_wifi
       type: git
-    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
+    version: ffd55cd861271aa7dac187636a0181e00a8e9bd6
   espressif/esp_websocket_client:
     component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
     dependencies:
@@ -193,6 +193,6 @@ direct_dependencies:
 - dc_time
 - dc_ui
 - dc_wifi
-manifest_hash: 2a1bc2cd99e23a65ae012d9063465fd9f824e294518f01b73b8b3efe23ea4740
+manifest_hash: 522dee75f4d88d12a694d08080045774ecb2171c7cfb285cb150f17e783618cb
 target: esp32c3
 version: 2.0.0

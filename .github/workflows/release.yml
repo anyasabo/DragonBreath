@@ -98,7 +98,9 @@ jobs:
           # App-only release: the OTA app image is the product. The factory image
           # + install bundle are still built (recovery/dev machinery stays in the
           # repo) but no longer published — install/revert is app-only over stock OTA.
+          # SHA256SUMS.txt lists exactly the published assets in this list.
+          assets=("dragonbreath-${VERSION}.bin" manifest.json)
+          ( cd dist && sha256sum "${assets[@]}" > SHA256SUMS.txt )
           gh release create "$VERSION" "${flags[@]}" \
-            "dist/dragonbreath-${VERSION}.bin" \
-            dist/manifest.json \
+            "${assets[@]/#/dist/}" \
             dist/SHA256SUMS.txt

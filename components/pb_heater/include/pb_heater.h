@@ -54,9 +54,10 @@ typedef struct {
     pb_heater_constraint_t constraint;
 } pb_heater_telemetry_t;
 
-// Metrics counters since boot. A trip counts once for each new latch episode
-// (a held over-temperature does not count again on each tick). The boot restore
-// of a persisted latch is not counted. Panic-offs count each request.
+// Metrics counters since boot. A trip counts once for each cause in a latch
+// episode: a held over-temperature does not count again on each tick, but a new
+// cause during an active latch counts. A fault clear starts a new episode. The
+// boot restore of a persisted latch is not counted. Panic-offs count each request.
 typedef struct {
     uint32_t trips[PB_FAULT__COUNT];   // index: pb_fault_reason_t
     uint32_t panic_offs;

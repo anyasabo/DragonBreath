@@ -7,6 +7,24 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+- **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or
+  chamber over-temp tripped while a panic-off, a permanent inhibit or an
+  unreadable-store boot latch was held, the trip was not written to NVS. After a
+  power cycle the device came up without the fault latch. Now the hazard cause
+  is written to NVS. A hazard cause also replaces a persisted generic
+  `safety trip` cause (lease watchdog) once. A panic-off or an inhibit alone
+  still clears on reboot.
+- **A deferred fault write sometimes wrote a cleared fault back.** If a fault
+  write failed, a clear and then a panic-off landed before the retry, the retry
+  wrote the cleared cause to NVS again. The retry now writes only a latch that
+  belongs in NVS.
+- **A failed fault clear sometimes left flash unlatched.** NVS writes each key to
+  flash at once. The clear wrote the latch key first, so a failure on the code
+  key left flash unlatched while RAM stayed latched (HTTP 500). The clear now
+  writes the latch key last, so a partial failure leaves flash latched. The
+  next control tick writes the cause again.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

@@ -135,6 +135,32 @@ static void brand_ap(void)
     ESP_LOGI(TAG, "AP SSID default set: %s", ssid);
 }
 
+#ifndef CONFIG_DB_DEFAULT_AP_MODE_ALWAYS
+// Product default for the setup AP mode (Kconfig DB_DEFAULT_AP_MODE). dc_wifi has
+// no API for its default, so write its "ap_mode" NVS key before dc_wifi_start().
+// Write only if NVS has no AP mode and no legacy "ap_enabled" bool: never
+// override a user's choice. A read error other than "not found" writes nothing.
+static void default_ap_mode(void)
+{
+#if defined(CONFIG_DB_DEFAULT_AP_MODE_TEMP)
+    const dc_wifi_ap_mode_t mode = DC_WIFI_AP_TEMP;
+#elif defined(CONFIG_DB_DEFAULT_AP_MODE_FALLBACK)
+    const dc_wifi_ap_mode_t mode = DC_WIFI_AP_FALLBACK;
+#else
+    const dc_wifi_ap_mode_t mode = DC_WIFI_AP_OFF;
+#endif
+    nvs_handle_t h;
+    if (nvs_open("app_nvs", NVS_READWRITE, &h) != ESP_OK) return;
+    uint8_t v;
+    if (nvs_get_u8(h, "ap_mode", &v) == ESP_ERR_NVS_NOT_FOUND &&
+        nvs_get_u8(h, "ap_enabled", &v) == ESP_ERR_NVS_NOT_FOUND &&
+        nvs_set_u8(h, "ap_mode", (uint8_t)mode) == ESP_OK &&
+        nvs_commit(h) == ESP_OK)
+        ESP_LOGI(TAG, "AP mode default set: %s", dc_wifi_ap_mode_to_str(mode));
+    nvs_close(h);
+}
+#endif
+
 static esp_err_t configure_core_identity(void)
 {
     // "dragonbreath" is the DEFAULT hostname; dc_wifi applies a user override
@@ -523,6 +549,9 @@ void app_main(void)
     brand_ap();                              // AP name = DragonBreath_XXXX
 #if defined(DB_WIFI_SSID) || defined(DB_MOONRAKER_HOST)
     seed_dev_config();
+#endif
+#ifndef CONFIG_DB_DEFAULT_AP_MODE_ALWAYS
+    default_ap_mode();                       // after the dev seed: a seeded mode wins
 #endif
     // Network bring-up is LOG-AND-CONTINUE, never ESP_ERROR_CHECK: a transient
     // init error (e.g. httpd_start NO_MEM under boot heap pressure) must not

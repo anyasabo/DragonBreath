@@ -25,6 +25,11 @@ below into the GitHub Release notes.
 - `sdkconfig.defaults` turns on the FreeRTOS trace facility and the run-time
   stats (64-bit counter) for the per-task metrics. Static DRAM use increases by
   approximately 1.7 KB.
+- New build option `CONFIG_DB_DEFAULT_AP_MODE` (Always, Temporary, Fallback or
+  Off). It sets the setup AP mode for a device that has no stored AP mode. The
+  default is Always, the same as before, and writes nothing to NVS. The other
+  choices write the `ap_mode` NVS key once, before Wi-Fi starts. A stored user
+  choice always wins. See README "Setup AP mode".
 
 ### Fixed
 - **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or

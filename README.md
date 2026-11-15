@@ -115,6 +115,25 @@ the reboot cuts the heater, so it's a safe escape hatch.
 Prefer to do it over USB? `tools/flash.py --erase-nvs` clears the same config region
 without touching the firmware.
 
+### Setup AP mode
+
+With saved Wi-Fi credentials, the setup AP mode controls the `DragonBreath_XXXX` AP:
+
+| Mode | Setup AP |
+|---|---|
+| Always (default) | On next to your Wi-Fi. Its password is the AP access control. |
+| Temporary | On for 15 minutes after boot. It stays on if the device cannot join your Wi-Fi. |
+| Fallback | Off while the device is on your Wi-Fi. On if the device cannot join at boot. |
+| Off | Off. If the device cannot join, use the front-panel reset above. |
+
+With no saved credentials, the setup AP is always on. The build option
+`CONFIG_DB_DEFAULT_AP_MODE` (`idf.py menuconfig` → *DragonBreath Wi-Fi defaults*)
+sets the mode for a device that has no stored mode. This includes a device that
+never changed the mode, so an update to a build with another default changes its mode.
+A mode that you set in the setup page always wins. A front-panel reset erases the stored mode, so the build default
+applies again. The default AP password `987654321` is public. If you keep the AP on,
+change its password.
+
 ## Status
 | Component | State |
 |---|---|

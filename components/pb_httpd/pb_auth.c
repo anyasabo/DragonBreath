@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "pb_auth.h"
 
+#include <string.h>
+
 pb_auth_result_t pb_auth_decide(const pb_auth_input_t *in)
 {
     if (in->locked_out) return PB_AUTH_LOCKED;
@@ -23,6 +25,19 @@ bool pb_auth_token_valid(const char *token)
         if (ch < 0x21 || ch > 0x7E) return false;
     }
     return true;
+}
+
+bool pb_auth_local_addr_is(bool is_v6, const uint8_t *addr, const uint8_t ap_ip[4])
+{
+    static const uint8_t zero[4] = {0, 0, 0, 0};
+    // lwIP has no IN6_IS_ADDR_V4MAPPED: check the ::ffff:0:0/96 prefix here.
+    static const uint8_t v4mapped[12] = {0,0,0,0, 0,0,0,0, 0,0,0xff,0xff};
+    if (!addr || !ap_ip || memcmp(ap_ip, zero, 4) == 0) return false;
+    if (is_v6) {
+        if (memcmp(addr, v4mapped, sizeof v4mapped) != 0) return false;
+        addr += sizeof v4mapped;
+    }
+    return memcmp(addr, ap_ip, 4) == 0;
 }
 
 bool pb_auth_token_equal(const char *given, size_t given_len,

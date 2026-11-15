@@ -59,8 +59,9 @@ These routes do **not** check the header:
   `token_required` or HTTP 429 `auth_locked`.
 - The shared portal routes use a callback that returns only true or false. For
   each failure kind, also a lockout, they return HTTP 403 `authorization required`.
-- On each HTTP 403, the dashboard forgets its stored token and asks for a token
-  again.
+- On an HTTP 403, the setup and settings pages of the dashboard forget the stored
+  token and ask for it again. Other dashboard controls (for example presets, zones
+  and commands) show only an error.
 
 **The lockout is a denial-of-service lever.** Each host that can reach the API can
 send wrong tokens: other LAN hosts, and hosts on other VLANs that can route to the

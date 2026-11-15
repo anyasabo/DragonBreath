@@ -31,6 +31,19 @@
 // Device/boot identity is initialized here before any request can be served.
 esp_err_t pb_httpd_register(httpd_handle_t server);
 
+// Register a product route. Use this function, not httpd_register_uri_handler().
+// If the handler returns ESP_OK but did not read all of the body, the request
+// gets ESP_FAIL: httpd then closes the socket. Else httpd reads and discards the
+// rest of the body with no time limit, and a slow client stops the server.
+// The function keeps a copy of the route, so uri can be a local variable.
+esp_err_t pb_httpd_register_route(httpd_handle_t server, const httpd_uri_t *uri);
+
+// Read exactly len bytes of the request body into buf. Return false if the
+// client closed the socket, stalled, or was too slow (see pb_httpd_body.h).
+// Use this function for each body read, because pb_httpd_register_route()
+// counts the bytes that it reads.
+bool pb_httpd_read_body(httpd_req_t *req, char *buf, size_t len);
+
 // True if the request carries a valid PB_AUTH_HEADER. If a control token is
 // configured (NVS app_nvs/"ctl_token"), the header must equal it (constant-time
 // compare); otherwise any non-empty value passes (presence-only CSRF gate).

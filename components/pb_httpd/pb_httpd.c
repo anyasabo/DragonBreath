@@ -13,6 +13,7 @@
 #include "dc_moonraker.h"
 #include "dc_prusa.h"
 #include "dc_evlog.h"
+#include "pb_httpd_body.h"
 
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -456,19 +457,72 @@ static esp_err_t api_error(
     return send_json(req, o);
 }
 
+// Body bytes that the handler of the current request read. The httpd task
+// serves one request at a time, so one counter is enough.
+static size_t s_body_read;
+
+_Static_assert(PB_HTTPD_BODY_RECV_TIMEOUT == HTTPD_SOCK_ERR_TIMEOUT, "timeout code");
+
+static int body_recv(void *ctx, char *buf, size_t len)
+{
+    int got = httpd_req_recv((httpd_req_t *)ctx, buf, len);
+    if (got > 0) s_body_read += (size_t)got;
+    return got;
+}
+
+bool pb_httpd_read_body(httpd_req_t *req, char *buf, size_t len)
+{
+    return pb_httpd_read_body_bounded(body_recv, esp_timer_get_time, req, buf, len,
+                                      PB_HTTPD_BODY_LIMITS);
+}
+
+// The handlers of the routes from pb_httpd_register_route(). ROUTES_MAX must
+// be at least the number of product routes: 27 on upstream main, 28 on the
+// fork (anya adds /metrics). The margin is for new routes.
+#define ROUTES_MAX 48
+typedef struct {
+    esp_err_t (*handler)(httpd_req_t *req);
+    void *user_ctx;
+} route_t;
+static route_t s_routes[ROUTES_MAX];
+static size_t s_route_count;
+
+// Run a route handler. If it sent a response but did not read all of the
+// body, return ESP_FAIL. Then httpd closes the socket and does not read the
+// rest of the body (see pb_httpd_body_unread()).
+static esp_err_t route_handler(httpd_req_t *req)
+{
+    const route_t *route = req->user_ctx;
+    req->user_ctx = route->user_ctx;
+    s_body_read = 0;
+    esp_err_t err = route->handler(req);
+    if (err == ESP_OK && pb_httpd_body_unread(req->content_len, s_body_read)) return ESP_FAIL;
+    return err;
+}
+
+esp_err_t pb_httpd_register_route(httpd_handle_t server, const httpd_uri_t *uri)
+{
+    if (s_route_count >= ROUTES_MAX) {
+        ESP_LOGE(TAG, "register %s: no free route slot", uri->uri);
+        return ESP_ERR_NO_MEM;
+    }
+    route_t *route = &s_routes[s_route_count];
+    *route = (route_t){ .handler = uri->handler, .user_ctx = uri->user_ctx };
+    httpd_uri_t wrapped = *uri;
+    wrapped.handler = route_handler;
+    wrapped.user_ctx = route;
+    esp_err_t err = httpd_register_uri_handler(server, &wrapped);
+    if (err == ESP_OK) s_route_count++;
+    return err;
+}
+
 static cJSON *recv_json(httpd_req_t *req)
 {
     if (req->content_len <= 0 || req->content_len > API_BODY_MAX) return NULL;
     char body[API_BODY_MAX + 1];
-    int got = 0;
-    while (got < req->content_len) {
-        int r = httpd_req_recv(req, body + got, req->content_len - got);
-        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
-        if (r <= 0) return NULL;
-        got += r;
-    }
-    body[got] = '\0';
-    return cJSON_ParseWithLength(body, got);
+    if (!pb_httpd_read_body(req, body, req->content_len)) return NULL;
+    body[req->content_len] = '\0';
+    return cJSON_ParseWithLength(body, req->content_len);
 }
 
 static bool json_number(const cJSON *o, const char *key, double *out)
@@ -854,6 +908,12 @@ static void sse_task(void *arg)
 
 static esp_err_t events_get(httpd_req_t *req)
 {
+    // The stream task takes the socket. route_handler() must not close it for
+    // an unread body, so refuse a body here, before the stream starts.
+    if (req->content_len > 0) {
+        api_error(req, "400 Bad Request", "invalid_command", "an event stream request has no body", NULL);
+        return ESP_FAIL;
+    }
     portENTER_CRITICAL(&s_sse_mux);
     bool full = s_sse_clients >= SSE_MAX_CLIENTS;
     if (!full) s_sse_clients++;
@@ -982,10 +1042,12 @@ static esp_err_t settings_post(httpd_req_t *req)
 
     char q[128];
     if (httpd_req_get_url_query_str(req, q, sizeof q) != ESP_OK) {
-        // Fall back to a query-style body ("max=60&comms_ms=30000").
-        int r = httpd_req_recv(req, q, sizeof q - 1);
-        if (r <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no settings given"); return ESP_FAIL; }
-        q[r] = '\0';
+        // Fall back to a query-style body ("max=60&comms_ms=30000"). Read all of
+        // it: a part of the body can end in a part of a value ("max=6").
+        size_t len = req->content_len;
+        if (len >= sizeof q) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "settings body too long"); return ESP_FAIL; }
+        if (len == 0 || !pb_httpd_read_body(req, q, len)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no settings given"); return ESP_FAIL; }
+        q[len] = '\0';
     }
 
     bool applied = false;
@@ -1366,14 +1428,12 @@ static esp_err_t factory_reset_post(httpd_req_t *req)
             && httpd_query_key_value(q, "confirm", v, sizeof v) == ESP_OK
             && strcmp(v, "factory-reset") == 0)
         confirmed = true;
-    if (!confirmed && req->content_len > 0) {
-        int r = httpd_req_recv(req, q, sizeof q - 1);
-        if (r > 0) {
-            q[r] = '\0';
-            if (httpd_query_key_value(q, "confirm", v, sizeof v) == ESP_OK
-                    && strcmp(v, "factory-reset") == 0)
-                confirmed = true;
-        }
+    if (!confirmed && req->content_len > 0 && req->content_len < sizeof q
+            && pb_httpd_read_body(req, q, req->content_len)) {
+        q[req->content_len] = '\0';
+        if (httpd_query_key_value(q, "confirm", v, sizeof v) == ESP_OK
+                && strcmp(v, "factory-reset") == 0)
+            confirmed = true;
     }
     if (!confirmed)
         return api_error(req, "400 Bad Request", "confirmation_required",
@@ -1491,6 +1551,9 @@ esp_err_t pb_httpd_register(httpd_handle_t server)
 {
     if (!server) return ESP_ERR_INVALID_ARG;
     s_server = server;
+    // A new server (or a new fuzz input) starts with an empty route table.
+    // The db_portal routes come after this call.
+    s_route_count = 0;
 
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -1521,27 +1584,20 @@ esp_err_t pb_httpd_register(httpd_handle_t server)
     httpd_uri_t hmg    = { .uri = "/api/v2/heater_method", .method = HTTP_GET,  .handler = heater_method_get };
     httpd_uri_t hmp    = { .uri = "/api/v2/heater_method", .method = HTTP_POST, .handler = heater_method_post };
     httpd_uri_t metr   = { .uri = "/metrics",          .method = HTTP_GET,  .handler = pb_httpd_metrics_get };
-    httpd_register_uri_handler(s_server, &info);
-    httpd_register_uri_handler(s_server, &state);
-    httpd_register_uri_handler(s_server, &cmd);
-    httpd_register_uri_handler(s_server, &hb);
-    httpd_register_uri_handler(s_server, &events);
-    httpd_register_uri_handler(s_server, &health);
-    httpd_register_uri_handler(s_server, &setg);
-    httpd_register_uri_handler(s_server, &setp);
-    httpd_register_uri_handler(s_server, &logs);
-    httpd_register_uri_handler(s_server, &cons);
-    httpd_register_uri_handler(s_server, &rst);
-    httpd_register_uri_handler(s_server, &booti);
-    httpd_register_uri_handler(s_server, &frst);
-    httpd_register_uri_handler(s_server, &tok);
-    httpd_register_uri_handler(s_server, &calg);
-    httpd_register_uri_handler(s_server, &calp);
-    httpd_register_uri_handler(s_server, &zong);
-    httpd_register_uri_handler(s_server, &zonp);
-    httpd_register_uri_handler(s_server, &hmg);
-    httpd_register_uri_handler(s_server, &hmp);
-    httpd_register_uri_handler(s_server, &metr);
+    const httpd_uri_t *routes[] = {
+        &info, &state, &cmd, &hb, &events,
+        &health, &setg, &setp, &logs, &cons,
+        &rst, &booti, &frst, &tok, &calg,
+        &calp, &zong, &zonp, &hmg, &hmp,
+        &metr,
+    };
+    for (size_t i = 0; i < sizeof routes / sizeof routes[0]; i++) {
+        esp_err_t err = pb_httpd_register_route(s_server, routes[i]);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "register %s: %s", routes[i]->uri, esp_err_to_name(err));
+            return err;
+        }
+    }
     ESP_LOGI(TAG, "HTTP API v2 registered (shared portal owns HTTP, provisioning and OTA)");
     return ESP_OK;
 }

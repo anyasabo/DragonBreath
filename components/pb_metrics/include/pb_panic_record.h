@@ -56,6 +56,16 @@ bool pb_panic_valid(const pb_panic_record_t *r);
 // kept (others become '?'), so the text is safe as a log line and a label.
 void pb_panic_copy_text(char *dst, size_t cap, const char *src);
 
+// The kind of a panic from what the wrapper of esp_panic_handler sees.
+// exception: panic_info_t.exception at the wrapper (before ESP-IDF changes it).
+// abort_flag: g_panic_abort. twdt_hint: esp_reset_reason_get_hint() is
+// ESP_RST_TASK_WDT.
+// On RISC-V (ESP-IDF v5.3 and v6.1), abort() and a task watchdog timeout both
+// arrive as PANIC_EXCEPTION_FAULT with g_panic_abort set. The task watchdog
+// also sets the reset reason hint first. The interrupt watchdog arrives as
+// PANIC_EXCEPTION_IWDT. An unknown value gives PB_PANIC_KIND_FAULT.
+uint8_t pb_panic_kind(unsigned exception, bool abort_flag, bool twdt_hint);
+
 // Stable name of a kind: "debug", "int_wdt", "task_wdt", "abort", "fault",
 // or "unknown".
 const char *pb_panic_kind_str(unsigned kind);

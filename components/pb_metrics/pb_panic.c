@@ -25,6 +25,8 @@
 #include "esp_attr.h"
 #include "esp_memory_utils.h"
 #include "esp_private/panic_internal.h"
+#include "esp_private/system_internal.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "riscv/rvruntime-frames.h"
@@ -65,13 +67,16 @@ static void capture(const panic_info_t *info)
         r->mcause = f->mcause;
         r->mtval = f->mtval;
     }
-    r->kind = (unsigned)info->exception < PB_PANIC_KINDS ? (uint8_t)info->exception
-                                                         : PB_PANIC_KIND_FAULT;
+    // The wrapper runs before esp_panic_handler() sets ABORT, so the kind
+    // comes from g_panic_abort and the reset reason hint (pb_panic_kind).
+    const bool twdt = esp_reset_reason_get_hint() == ESP_RST_TASK_WDT;
+    r->kind = pb_panic_kind((unsigned)info->exception, g_panic_abort, twdt);
 
     // The abort details ("abort() was called at PC ...") are better than the
-    // generic reason. esp_panic_handler() replaces the reason only after this.
+    // generic reason. The task watchdog sets no details.
     const char *reason = (g_panic_abort && readable(g_panic_abort_details))
-        ? g_panic_abort_details : info->reason;
+        ? g_panic_abort_details
+        : twdt ? "Task watchdog got triggered" : info->reason;
     if (readable(reason)) pb_panic_copy_text(r->reason, sizeof r->reason, reason);
 
     TaskHandle_t t = xTaskGetCurrentTaskHandle();
@@ -109,10 +114,14 @@ bool pb_panic_take(pb_panic_record_t *out, bool *first_report)
         return false;
     }
     if (first_report) *first_report = !s_record.reported;
-    if (!s_record.reported) {
+    if (out) *out = s_record;
+    return true;
+}
+
+void pb_panic_mark_reported(void)
+{
+    if (pb_panic_valid(&s_record) && !s_record.reported) {
         s_record.reported = 1;
         pb_panic_seal(&s_record);
     }
-    if (out) *out = s_record;
-    return true;
 }

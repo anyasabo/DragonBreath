@@ -254,6 +254,25 @@ static void test_copy_text(void)
     CHECK(strcmp(hi, "??x") == 0);
 }
 
+// The inputs that the wrapper of esp_panic_handler sees on RISC-V (ESP-IDF
+// v5.3.6 and v6.1), before esp_panic_handler() changes the kind:
+// - abort(): exception FAULT, g_panic_abort set, no task watchdog hint
+// - task watchdog (CONFIG_ESP_TASK_WDT_PANIC): exception FAULT, g_panic_abort
+//   set, hint ESP_RST_TASK_WDT
+// - interrupt watchdog: exception IWDT
+// - a load or store fault, an illegal instruction: exception FAULT
+// - a debug watchpoint (stack end): exception DEBUG
+static void test_kind_from_device_inputs(void)
+{
+    CHECK(pb_panic_kind(PB_PANIC_KIND_FAULT, true, false) == PB_PANIC_KIND_ABORT);
+    CHECK(pb_panic_kind(PB_PANIC_KIND_FAULT, true, true) == PB_PANIC_KIND_TWDT);
+    CHECK(pb_panic_kind(PB_PANIC_KIND_IWDT, false, false) == PB_PANIC_KIND_IWDT);
+    CHECK(pb_panic_kind(PB_PANIC_KIND_FAULT, false, false) == PB_PANIC_KIND_FAULT);
+    CHECK(pb_panic_kind(PB_PANIC_KIND_DEBUG, false, false) == PB_PANIC_KIND_DEBUG);
+    CHECK(pb_panic_kind(99, false, false) == PB_PANIC_KIND_FAULT);
+    CHECK(pb_panic_kind(99, true, false) == PB_PANIC_KIND_ABORT);
+}
+
 static void test_kind_and_bt(void)
 {
     CHECK(strcmp(pb_panic_kind_str(PB_PANIC_KIND_TWDT), "task_wdt") == 0);
@@ -297,6 +316,7 @@ int main(void)
     test_crc();
     test_record_valid();
     test_copy_text();
+    test_kind_from_device_inputs();
     test_kind_and_bt();
     printf("pb_metrics diagnostics host test: PASS\n");
     return 0;

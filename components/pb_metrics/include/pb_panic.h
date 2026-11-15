@@ -7,7 +7,11 @@
 #include "pb_panic_record.h"
 
 // Call once at boot. If RTC RAM holds a valid record, copy it to out and return
-// true. *first_report is true at the first boot after the panic (count it),
-// and false at later boots (a soft reset keeps the record). The record stays
-// in RTC RAM until a new panic or a power cycle.
+// true. *first_report is true until pb_panic_mark_reported() (count it), and
+// false after (a soft reset keeps the record). The record stays in RTC RAM
+// until a new panic or a power cycle.
 bool pb_panic_take(pb_panic_record_t *out, bool *first_report);
+
+// Call after the NVS commit of the panic count. If the commit fails, do not
+// call it: the next boot counts the panic again.
+void pb_panic_mark_reported(void);

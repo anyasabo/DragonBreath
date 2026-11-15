@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 
+#include "esp_attr.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -89,7 +90,10 @@ void pb_metrics_get_airflow(pb_airflow_t *out)
     taskEXIT_CRITICAL(&s_mux);
 }
 
-static void alloc_failed(size_t size, uint32_t caps, const char *function_name)
+// IRAM: an allocation can fail while the flash cache is off (for example in
+// an NVS write). heap_caps_alloc_failed() is in IRAM for this reason. The
+// atomic helpers (__atomic_fetch_add_4) are in IRAM too.
+static IRAM_ATTR void alloc_failed(size_t size, uint32_t caps, const char *function_name)
 {
     (void)caps;
     (void)function_name;
@@ -130,7 +134,9 @@ void pb_metrics_get_wifi_disconnects(uint32_t *count, uint16_t *last_reason)
     }
 }
 
-static void take_panic(nvs_handle_t h, bool nvs_ok)
+// Read the breadcrumb and stage the panic count in NVS. Returns true if the
+// record is new: then the caller marks it reported after the NVS commit.
+static bool take_panic(nvs_handle_t h, bool nvs_ok)
 {
     bool first = false;
     s_last_panic_valid = pb_panic_take(&s_last_panic, &first);
@@ -144,7 +150,7 @@ static void take_panic(nvs_handle_t h, bool nvs_ok)
     }
     s_panic_count = n;
     s_panic_count_valid = nvs_ok;
-    if (!s_last_panic_valid) return;
+    if (!s_last_panic_valid) return false;
     char bt[PB_PANIC_BT_TEXT + 1];
     pb_panic_bt_text(&s_last_panic, bt, sizeof bt);
     ESP_LOGW(TAG, "%s panic: task=%s kind=%s pc=0x%08lx ra=0x%08lx mcause=0x%lx mtval=0x%lx "
@@ -154,6 +160,7 @@ static void take_panic(nvs_handle_t h, bool nvs_ok)
              (unsigned long)s_last_panic.pc, (unsigned long)s_last_panic.ra,
              (unsigned long)s_last_panic.mcause, (unsigned long)s_last_panic.mtval,
              s_last_panic.reason, bt[0] ? bt : "-");
+    return first && nvs_ok;
 }
 
 void pb_metrics_boot_init(void)
@@ -165,16 +172,17 @@ void pb_metrics_boot_init(void)
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
         ESP_LOGW(TAG, "boot count: nvs_open failed, reset reason %u", s_reset_reason);
-        take_panic(0, false);
+        (void)take_panic(0, false);         // not counted: the next boot tries again
         return;
     }
     uint32_t n = 0;
     (void)nvs_get_u32(h, KEY_BOOT_CNT, &n);   // not found: first boot, n stays 0
     n++;
     bool ok = nvs_set_u32(h, KEY_BOOT_CNT, n) == ESP_OK;
-    take_panic(h, true);
+    bool new_panic = take_panic(h, true);
     if (ok && nvs_commit(h) == ESP_OK) {
         s_boot_count = n;
+        if (new_panic) pb_panic_mark_reported();   // only after the commit
         ESP_LOGI(TAG, "boot %lu, reset reason %u", (unsigned long)n, s_reset_reason);
     } else {
         s_panic_count_valid = false;

@@ -46,6 +46,13 @@ void pb_panic_copy_text(char *dst, size_t cap, const char *src)
     dst[n] = '\0';
 }
 
+uint8_t pb_panic_kind(unsigned exception, bool abort_flag, bool twdt_hint)
+{
+    if (twdt_hint) return PB_PANIC_KIND_TWDT;
+    if (abort_flag) return PB_PANIC_KIND_ABORT;
+    return exception < PB_PANIC_KINDS ? (uint8_t)exception : PB_PANIC_KIND_FAULT;
+}
+
 const char *pb_panic_kind_str(unsigned kind)
 {
     static const char *const names[PB_PANIC_KINDS] = {

@@ -40,7 +40,8 @@
 //     - the local foldback for an external regulation value: cut at 72 C,
 //       resume below 67 C
 //     - the 1 C bang-bang hysteresis, and the PID window (30 s) and dwell (2 s)
-//     - a latch persists only on the not-latched -> latched transition (gap 1)
+//     - a hazard trip writes NVS only if the current latch is not in NVS yet
+//       (so repeated trips while hot do not write NVS again)
 //     - the 2 s throttle of the deferred persist retry
 //     - the clamps of the other settings (minimum ceiling 30 C, cool_release)
 #define _DEFAULT_SOURCE
@@ -88,6 +89,7 @@ typedef struct {
 
     // Oracle state (expected values, from SAFETY.md and pb_heater.h).
     bool faulted, inhibited, expect_persist;
+    int exp_cause;                 // the cause that NVS must hold (PB_FAULT_NONE: none)
     float exp_target, exp_max, exp_fb_cut;
     uint32_t exp_comms_ms;
     int exp_method;
@@ -101,8 +103,7 @@ typedef struct {
     long relay_on_ticks, liveness_checks, fb_cut_ticks, local_cut_ticks, reboots;
     long trips[PB_FAULT__COUNT];
     long pid_liveness_checks;
-    long panics, clears_ok, clears_failed, gap1_events, gap3_events;
-    bool gap_open;
+    long panics, clears_ok, clears_failed;
 } world_t;
 
 static world_t *W;
@@ -254,12 +255,34 @@ static void check_settings(void)
     RCHECK(cr >= 30.0f && cr <= 65.0f, "cool_release outside [30, 65]");
 }
 
+// The cause that a boot restores from the stored code (pb_heater_fault_decide).
+static int nvs_restored_cause(void)
+{
+    int c = nvs_u("fault_code");
+    return (c > PB_FAULT_NONE && c < PB_FAULT__COUNT) ? c : PB_FAULT_EMERGENCY;
+}
+
+static bool oracle_hazard(int code)
+{
+    return code == PB_FAULT_PTC_OVERTEMP || code == PB_FAULT_CHAMBER_OVERTEMP ||
+           code == PB_FAULT_CHAMBER_SENSOR || code == PB_FAULT_PTC_SENSOR ||
+           code == PB_FAULT_LINK_LOST;
+}
+
+// True if this latch must write NVS: NVS does not hold the latch yet, or a
+// hazard cause replaces a persisted non-hazard cause (emergency_off).
+static bool oracle_writes(pb_fault_reason_t code, bool persists)
+{
+    return persists && (W->exp_cause == PB_FAULT_NONE ||
+                        (oracle_hazard(code) && !oracle_hazard(W->exp_cause)));
+}
+
 static void latch_oracle(pb_fault_reason_t code, bool persists)
 {
-    bool transition = !W->faulted;
+    if (oracle_writes(code, persists)) W->exp_cause = code;
     W->faulted = true;
     W->exp_target = 0.0f;
-    if (persists && transition) W->expect_persist = true;
+    W->expect_persist = W->exp_cause != PB_FAULT_NONE;
     (void)code;
 }
 
@@ -301,13 +324,11 @@ static void one_tick(void)
         if (!pre_faulted && nvs_writes_work())
             RCHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == (int)trip,
                    "trip %d was not persisted although NVS works", (int)trip);
-        if (pre_faulted && !W->expect_persist && nvs_writes_work() &&
-            nvs_u("fault_latch") != 1) {
-            // Known gap 1: a hazard trip on top of a RAM-only latch is not
-            // persisted. Counted, not failed (see the directed gap test).
-            if (!W->gap_open) W->gap1_events++;
-            W->gap_open = true;
-        }
+        // Also on top of a RAM-only latch (panic-off, inhibit, the boot
+        // NVS_UNREADABLE latch), or replacing a persisted emergency_off cause.
+        if (oracle_writes(trip, true) && nvs_writes_work())
+            RCHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == (int)trip,
+                   "trip %d was not persisted (NVS cause was %d)", (int)trip, W->exp_cause);
         latch_oracle(trip, true);
     } else {
         if (pre_faulted || !armed) {
@@ -365,8 +386,9 @@ static void one_tick(void)
     }
 
     // Durability: a latch that must persist lands within 2 s of NVS recovery.
-    if (W->expect_persist && nvs_u("fault_latch") != 1 && nvs_writes_work() &&
-        env->now_us - W->nvs_healthy_since_us > 2000000)
+    if (W->expect_persist && nvs_writes_work() &&
+        env->now_us - W->nvs_healthy_since_us > 2000000 &&
+        (nvs_u("fault_latch") != 1 || nvs_restored_cause() != W->exp_cause))
         rfail(__LINE__, "pending fault persist did not land 2 s after NVS recovered");
 
     check_settings();
@@ -407,6 +429,7 @@ static void act_set_target(void)
 
 static void act_clear(void)
 {
+    const bool flash_latched = nvs_u("fault_latch") == 1;
     esp_err_t r = clear_fault();
     if (W->inhibited) {
         RCHECK(r == ESP_ERR_INVALID_STATE, "clear accepted while inhibited");
@@ -414,19 +437,16 @@ static void act_clear(void)
         RCHECK(r != ESP_OK, "clear reported success although the NVS write failed");
         RCHECK(pb_heater_is_faulted() == W->faulted, "a failed clear changed the RAM latch");
         W->clears_failed++;
-        if (W->faulted && nvs_u("fault_latch") != 1 && W->expect_persist) {
-            // Known gap 3: a clear that fails part way leaves flash unlatched.
-            // Counted, not failed. The oracle follows the real flash content.
-            W->gap3_events++;
-            W->expect_persist = false;
-        }
+        // A clear that fails part way must leave flash latched.
+        if (flash_latched)
+            RCHECK(nvs_u("fault_latch") == 1, "a failed clear left flash unlatched");
     } else {
         RCHECK(r == ESP_OK, "clear failed with working NVS (%d)", r);
         RCHECK(nvs_u("fault_latch") == 0, "clear did not persist");
         W->faulted = false;
         W->exp_target = 0.0f;
         W->expect_persist = false;
-        W->gap_open = false;
+        W->exp_cause = PB_FAULT_NONE;
         W->clears_ok++;
     }
 }
@@ -444,13 +464,13 @@ static void act_panic(void)
 
 static void act_emergency(void)
 {
-    bool transition = !W->faulted;
+    bool writes = oracle_writes(PB_FAULT_EMERGENCY, true);
     env->ctx = CTX_CONTROL;
     pb_heater_emergency_off("random emergency");
     env->ctx = CTX_OTHER;
     env_check_quiescent();
     RCHECK(relay() == 0, "emergency_off left the relay on");
-    if (transition && nvs_writes_work())
+    if (writes && nvs_writes_work())
         RCHECK(nvs_u("fault_latch") == 1, "emergency_off was not persisted");
     latch_oracle(PB_FAULT_EMERGENCY, true);
 }
@@ -704,9 +724,14 @@ static void oracle_boot(void)
     W->faulted = latched;
     W->inhibited = false;
     W->exp_target = 0.0f;
-    W->expect_persist = env_nvs_read("fault_latch", &v) && v == 1;
+    // The firmware treats a latch it restored from NVS as written. After a read
+    // failure (NVS_UNREADABLE) it treats the latch as not written.
+    W->exp_cause = PB_FAULT_NONE;
+    if (latched && !env->nvs_fail_open_ro && !env->nvs_fail_get) {
+        W->exp_cause = nvs_restored_cause();
+    }
+    W->expect_persist = W->exp_cause != PB_FAULT_NONE;
     W->fb = W->local = false;
-    W->gap_open = false;
     W->ext_ctrl = NAN;
     W->last_link_us = env->now_us;
     W->nvs_healthy_since_us = env->now_us;
@@ -745,7 +770,7 @@ static long env_long(const char *name, long def)
 }
 
 typedef struct {
-    long relay_on, liveness, pid_liveness, fb_cut, local_cut, gaps;
+    long relay_on, liveness, pid_liveness, fb_cut, local_cut;
     long trips[PB_FAULT__COUNT];
 } totals_t;
 
@@ -780,21 +805,19 @@ static bool run_seed(uint64_t seed, long steps, totals_t *tot)
     }
     printf("ok   random seed=%" PRIu64 " rref=%d steps=%ld ticks=%ld faulted=%ld armed=%ld relay_on=%ld "
            "fb_cut=%ld local_cut=%ld reboots=%ld panics=%ld clears=%ld/%ld "
-           "liveness=%ld pid_liveness=%ld trips[ptc=%ld ch=%ld chs=%ld ptcs=%ld link=%ld] "
-           "gap1=%ld gap3=%ld\n",
+           "liveness=%ld pid_liveness=%ld trips[ptc=%ld ch=%ld chs=%ld ptcs=%ld link=%ld]\n",
            seed, env->rref_kohm, W->steps, W->ticks, W->faulted_ticks, W->armed_ticks,
            W->relay_on_ticks,
            W->fb_cut_ticks, W->local_cut_ticks, W->reboots, W->panics,
            W->clears_ok, W->clears_failed, W->liveness_checks, W->pid_liveness_checks,
            W->trips[PB_FAULT_PTC_OVERTEMP], W->trips[PB_FAULT_CHAMBER_OVERTEMP],
            W->trips[PB_FAULT_CHAMBER_SENSOR], W->trips[PB_FAULT_PTC_SENSOR],
-           W->trips[PB_FAULT_LINK_LOST], W->gap1_events, W->gap3_events);
+           W->trips[PB_FAULT_LINK_LOST]);
     tot->relay_on += W->relay_on_ticks;
     tot->liveness += W->liveness_checks;
     tot->pid_liveness += W->pid_liveness_checks;
     tot->fb_cut += W->fb_cut_ticks;
     tot->local_cut += W->local_cut_ticks;
-    tot->gaps += W->gap1_events + W->gap3_events;
     for (int i = 0; i < PB_FAULT__COUNT; ++i) tot->trips[i] += W->trips[i];
     return true;
 }
@@ -825,7 +848,7 @@ static bool check_totals(const totals_t *t)
     return ok;
 }
 
-bool heater_random_test(long *gap_events)
+bool heater_random_test(void)
 {
     totals_t tot;
     memset(&tot, 0, sizeof(tot));
@@ -849,7 +872,6 @@ bool heater_random_test(long *gap_events)
         // Only the full default set must reach every path.
         if (ok && !getenv("PB_HEATER_SEEDS") && !getenv("PB_HEATER_STEPS")) ok = check_totals(&tot);
     }
-    *gap_events += tot.gaps;
     munmap(p, sizeof(world_t));
     return ok;
 }

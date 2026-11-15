@@ -279,6 +279,7 @@ static esp_err_t nvs_set(nvs_handle_t h, const char *key, host_nvs_type_t type, 
     host_nvs_handle_t *hh = handle_get(h);
     ENV_REQUIRE(hh->writable, "nvs_set on a read-only handle");
     hh->n_sets++;
+    env->nvs_sets++;
     if (env->nvs_fail_set) return env->nvs_fail_set;
     if (env->nvs_fail_set_nth > 0 && hh->n_sets == env->nvs_fail_set_nth) return ESP_FAIL;
     env_nvs_write(key, type, v);         // write-through, as in ESP-IDF

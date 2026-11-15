@@ -26,6 +26,28 @@ below into the GitHub Release notes.
   stats (64-bit counter) for the per-task metrics. Static DRAM use increases by
   approximately 1.7 KB.
 
+### Fixed
+- **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or
+  chamber over-temp tripped while a panic-off, a permanent inhibit or an
+  unreadable-store boot latch was held, the trip was not written to NVS. After a
+  power cycle the device came up without the fault latch. Now the hazard cause
+  is written to NVS. A hazard cause also replaces a persisted generic
+  `safety trip` cause (lease watchdog) once. A panic-off or an inhibit alone
+  still clears on reboot.
+- **A deferred fault write sometimes wrote a cleared fault back.** If a fault
+  write failed, a clear and then a panic-off landed before the retry, the retry
+  wrote the cleared cause to NVS again. The retry now writes only a latch that
+  belongs in NVS.
+- **A failed fault clear sometimes left flash unlatched.** NVS writes each key to
+  flash at once. The clear wrote the latch key first, so a failure on the code
+  key left flash unlatched while RAM stayed latched (HTTP 500). The clear now
+  writes the latch key last, so a partial failure leaves flash latched. The
+  next control tick writes the cause again.
+- **The `approach_limit` constraint was never reported.** The PID derivative
+  kept the duty just below the cap, so the old threshold did not match. The
+  constraint is now reported while the soft approach cap is active.
+  Diagnostics only.
+
 ### Security
 - Builds use ESP-IDF v5.3.6 (was v5.3.5). It fixes an out-of-bounds read in the
   lwIP DHCP server that the setup access point uses. A crafted DHCP packet can

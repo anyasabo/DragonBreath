@@ -19,6 +19,5 @@ void link_alive(void);
 esp_err_t clear_fault(void);
 int nvs_u(const char *key);      // committed NVS value, or -1 if absent
 
-// Randomized invariant test. Returns true if all seeds pass. Adds the number
-// of known-gap events (counted, not failed) to *gap_events.
-bool heater_random_test(long *gap_events);
+// Randomized invariant test. Returns true if all seeds pass.
+bool heater_random_test(void);

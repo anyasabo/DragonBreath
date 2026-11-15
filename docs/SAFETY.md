@@ -106,10 +106,13 @@ still holds, so an accidental press cannot revive an unsafe device.
 
 ## Persistent fault latch (survives a power cycle)
 A **hazard-driven** safety trip — PTC/chamber over-temp, a sensor fault while
-heating, or the comms-loss watchdog — is written to NVS on the latching
-transition and **restored at boot**. A device that tripped and then lost power
-comes back up **heater-OFF with heat/mode commands inhibited**, rather than
-silently ready to heat, and stays that way until an **explicit** clear after the
+heating, or the comms-loss watchdog — is written to NVS (a failed write is
+retried) and **restored at boot**. A RAM-only latch (panic-off, the permanent
+inhibit, or an unreadable-store boot latch) does not stop this: the hazard cause
+goes to NVS. A hazard cause also replaces a persisted generic `safety trip` cause
+(for example from a controller-lease watchdog) once. A device that tripped and
+then lost power comes back up **heater-OFF with heat/mode commands inhibited**,
+rather than silently ready to heat, and stays that way until an **explicit** clear after the
 condition has recovered (the next tick re-latches if it hasn't). The persisted
 cause is a small, range-checked numeric code; a live reason string carries
 session detail but is not persisted.
@@ -118,7 +121,10 @@ Boot restore is **fail-safe**: if the persisted state cannot be read reliably it
 comes up latched (`persisted fault state unreadable`). A fresh device (no NVS
 namespace yet) is not a fault. Clearing is **persist-first** — the NVS latch is
 cleared *before* the RAM latch, so a failed persist keeps the heater latched and
-the API returns HTTP 500 rather than falsely reporting the fault gone.
+the API returns HTTP 500 rather than falsely reporting the fault gone. NVS writes
+each key to flash at once, so the clear writes the latch key last: a failure part
+way leaves flash latched (at worst with a generic cause, which the next control
+tick writes again).
 
 This is deliberately separate from heat resume: the persisted latch is the **only**
 fault state that survives a reboot. The active mode, target, deadline, and lease

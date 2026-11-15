@@ -17,7 +17,6 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "nvs.h"
-#include "pb_httpd_body.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -888,25 +887,25 @@ static esp_err_t register_product_routes(httpd_handle_t server, void *ctx)
     esp_err_t err = pb_httpd_register(server);
     if (err != ESP_OK) return err;
     const httpd_uri_t presets_g = { .uri = "/api/v2/presets", .method = HTTP_GET, .handler = presets_get };
-    err = httpd_register_uri_handler(server, &presets_g);
+    err = pb_httpd_register_route(server, &presets_g);
     if (err != ESP_OK) return err;
     const httpd_uri_t presets_p = { .uri = "/api/v2/presets", .method = HTTP_POST, .handler = presets_post };
-    err = httpd_register_uri_handler(server, &presets_p);
+    err = pb_httpd_register_route(server, &presets_p);
     if (err != ESP_OK) return err;
     const httpd_uri_t bambu_scan = { .uri = "/api/v2/bambu/scan", .method = HTTP_POST, .handler = bambu_scan_post };
-    err = httpd_register_uri_handler(server, &bambu_scan);
+    err = pb_httpd_register_route(server, &bambu_scan);
     if (err != ESP_OK) return err;
     const httpd_uri_t bambu_disc = { .uri = "/api/v2/bambu/discovered", .method = HTTP_GET, .handler = bambu_discovered_get };
-    err = httpd_register_uri_handler(server, &bambu_disc);
+    err = pb_httpd_register_route(server, &bambu_disc);
     if (err != ESP_OK) return err;
     const httpd_uri_t km_config = { .uri = "/km-config", .method = HTTP_GET, .handler = km_config_get };
-    err = httpd_register_uri_handler(server, &km_config);
+    err = pb_httpd_register_route(server, &km_config);
     if (err != ESP_OK) return err;
     const httpd_uri_t diag = { .uri = "/diag", .method = HTTP_GET, .handler = diag_page };
-    err = httpd_register_uri_handler(server, &diag);
+    err = pb_httpd_register_route(server, &diag);
     if (err != ESP_OK) return err;
     const httpd_uri_t favicon = { .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_get };
-    return httpd_register_uri_handler(server, &favicon);
+    return pb_httpd_register_route(server, &favicon);
 }
 
 esp_err_t db_portal_start(void)

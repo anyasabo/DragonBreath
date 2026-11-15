@@ -251,6 +251,7 @@ others are disabled — there is exactly one controller.
 | GET | `/api/v2/state` | complete authoritative state snapshot — **no** side effects |
 | GET | `/api/v2/events` | SSE stream of state transitions and telemetry snapshots |
 | GET | `/api/v2/health` | uptime, heap, Wi-Fi signal/channel, SSE client count |
+| GET | `/metrics` | Prometheus text format: temperatures, control state, safety counters, control-tick timing, heap, per-task stack and CPU (see [`docs/api-v2.md`](docs/api-v2.md#prometheus-metrics)) |
 | GET | `/api/v2/logs` · `/api/v2/calibration` | event ring; sensor-calibration offsets + live readings |
 | GET | `/api/v2/console` | **auth-gated** `text/plain` firmware `ESP_LOGx` ring snapshot (backs the `/console` page) |
 | GET | `/km-config` | generate the saved Klipper-MQTT integration blocks without exposing its password |

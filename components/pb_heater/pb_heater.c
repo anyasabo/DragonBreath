@@ -5,6 +5,7 @@
 #include "pb_ntc.h"
 
 #include <math.h>
+#include <string.h>
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
@@ -36,6 +37,12 @@ static bool        s_persist_pending;  // guarded by s_mux — a latch persist n
                                        // to NVS; retried from pb_heater_tick until it lands
 static int64_t     s_persist_retry_us; // guarded by s_mux — last persist-retry timestamp
 static bool        s_on;            // written only by the control task; atomic read
+// Metrics counters since boot (read by pb_heater_get_counters).
+static uint32_t    s_trips[PB_FAULT__COUNT]; // guarded by s_mux; trips by cause
+static uint32_t    s_trip_causes;   // guarded by s_mux; causes counted in this latch episode
+static uint32_t    s_panic_offs;    // guarded by s_mux
+static int64_t     s_relay_on_us;   // guarded by s_mux; completed SSR on-time
+static int64_t     s_relay_since_us; // guarded by s_mux; start of the current on period
 static pb_heater_pid_state_t s_pid; // control-task only — shared dc_pid state + SSR window
 static float       s_commanded_duty; // guarded by s_mux; PID output after approach limit
 static float       s_approach_limit; // guarded by s_mux; product-owned active duty ceiling
@@ -100,7 +107,16 @@ static void ssr_set(bool on)        // control-task context only
 #ifndef CONFIG_PB_DEVBOARD_SAFE
     gpio_set_level(PB_GPIO_RELAY, on ? 1 : 0);
 #endif
+    // On-time bookkeeping only, after the GPIO write. Only this task writes s_on.
+    bool change = (on != s_on);
+    int64_t now = change ? esp_timer_get_time() : 0;
+    taskENTER_CRITICAL(&s_mux);
+    if (change) {
+        if (on) s_relay_since_us = now;
+        else    s_relay_on_us += now - s_relay_since_us;
+    }
     s_on = on;
+    taskEXIT_CRITICAL(&s_mux);
 }
 
 static void telemetry_set(float commanded_duty, float approach_limit,
@@ -464,16 +480,33 @@ static void do_latch(pb_fault_reason_t code, const char *reason,
     }
 }
 
+// Metrics: count a trip once for each cause in a latch episode. A cause that
+// stays true calls this on each tick, but counts once. A new cause during an
+// active latch (for example a PTC over-temp after a panic-off) counts too.
+// pb_heater_clear_fault() starts a new episode. The boot restore does not count.
+static void count_trip(pb_fault_reason_t code)
+{
+    if ((unsigned)code >= PB_FAULT__COUNT) return;
+    taskENTER_CRITICAL(&s_mux);
+    if (!(s_trip_causes & (1u << code))) {
+        s_trip_causes |= 1u << code;
+        s_trips[code]++;
+    }
+    taskEXIT_CRITICAL(&s_mux);
+}
+
 // Control-task safety trip: latch (driving the SSR down) + persist + log.
 static void trip(pb_fault_reason_t code)
 {
     do_latch(code, NULL, /*inhibit=*/false, /*drive_ssr=*/true, /*persist=*/true);
+    count_trip(code);
     ESP_LOGW(TAG, "EMERGENCY OFF: %s", pb_heater_fault_str(code));
 }
 
 void pb_heater_emergency_off(const char *reason)   // control-task context
 {
     do_latch(PB_FAULT_EMERGENCY, reason, /*inhibit=*/false, /*drive_ssr=*/true, /*persist=*/true);
+    count_trip(PB_FAULT_EMERGENCY);
     ESP_LOGW(TAG, "EMERGENCY OFF: %s", reason ? reason : "(unspecified)");
 }
 
@@ -487,6 +520,9 @@ void pb_heater_request_panic_off(const char *reason)   // any task
     // persist=false: a user panic-off is a manual stop, documented to clear on
     // reboot (only hazard-driven trips — over-temp/sensor/comms — persist).
     do_latch(PB_FAULT_PANIC_OFF, reason, /*inhibit=*/false, /*drive_ssr=*/false, /*persist=*/false);
+    taskENTER_CRITICAL(&s_mux);
+    s_panic_offs++;
+    taskEXIT_CRITICAL(&s_mux);
 }
 
 esp_err_t pb_heater_clear_fault(void)
@@ -519,6 +555,7 @@ esp_err_t pb_heater_clear_fault(void)
     s_fault_reason = NULL;          // target command is required to resume heating.
     s_fault_code = PB_FAULT_NONE;
     s_persist_pending = false;      // NVS now holds "not latched"; nothing to retry
+    s_trip_causes = 0;              // metrics: the next latch is a new episode
     taskEXIT_CRITICAL(&s_mux);
     if (s_persist_lock) xSemaphoreGive(s_persist_lock);
     if (was) ESP_LOGW(TAG, "fault latch cleared; target reset to 0 (send a fresh target to resume)");
@@ -531,12 +568,25 @@ void pb_heater_inhibit(const char *reason)
     // persisting could brick the device across reboots on a transient init failure.
     // Any clearable latch already in NVS is left intact.
     do_latch(PB_FAULT_INHIBITED, reason, /*inhibit=*/true, /*drive_ssr=*/true, /*persist=*/false);
+    count_trip(PB_FAULT_INHIBITED);
     ESP_LOGE(TAG, "HEATER INHIBITED (reboot-only): %s", reason ? reason : "(unspecified)");
 }
 
 bool pb_heater_is_inhibited(void) { return s_inhibited; }   // atomic bool read
 bool pb_heater_is_faulted(void) { return s_latched_off || s_inhibited; }
 bool pb_heater_is_on(void) { return s_on; }                 // atomic bool read
+
+void pb_heater_get_counters(pb_heater_counters_t *out)
+{
+    if (!out) return;
+    int64_t now = esp_timer_get_time();
+    taskENTER_CRITICAL(&s_mux);
+    memcpy(out->trips, s_trips, sizeof out->trips);
+    out->panic_offs = s_panic_offs;
+    int64_t on_us = s_relay_on_us + (s_on ? now - s_relay_since_us : 0);
+    taskEXIT_CRITICAL(&s_mux);
+    out->relay_on_us = on_us > 0 ? (uint64_t)on_us : 0;
+}
 
 const char *pb_heater_fault_reason(void)
 {

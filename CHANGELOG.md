@@ -7,6 +7,25 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- `GET /metrics`: a Prometheus text-format (0.0.4) endpoint for a direct scrape by
+  Prometheus or VictoriaMetrics. It is open and read-only, like `/api/v2/state`.
+  It reports these values:
+  - sensors, heater demand, relay output, fan, mode, targets and fault state
+  - safety trips by cause, panic-offs and relay on-time
+  - control-tick timing: late ticks, last and maximum duration, maximum interval
+  - heap, and the stack high-water mark and CPU time of each task
+  - uptime, boot count, reset reason, firmware version, Wi-Fi RSSI and HTTP sockets
+
+  The writer uses integer math only. It streams the response in chunks through
+  a 1 KB buffer. See `docs/api-v2.md`.
+- `GET /api/v2/state` reports `reset_reason` (the `esp_reset_reason()` of this boot,
+  for example `poweron` or `task_wdt`).
+- The firmware counts boots in NVS (`app_nvs/boot_cnt`).
+- `sdkconfig.defaults` turns on the FreeRTOS trace facility and the run-time
+  stats (64-bit counter) for the per-task metrics. Static DRAM use increases by
+  approximately 1.7 KB.
+
 ### Security
 - Builds use ESP-IDF v5.3.6 (was v5.3.5). It fixes an out-of-bounds read in the
   lwIP DHCP server that the setup access point uses. A crafted DHCP packet can

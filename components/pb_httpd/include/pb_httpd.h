@@ -7,6 +7,7 @@
 //   GET  /api/v2/health
 //   POST /api/v2/command      revision-aware mode/control command
 //   POST /api/v2/heartbeat    refresh exactly one device-issued lease
+//   GET  /metrics             Prometheus text format (read-only, open)
 //
 // The alpha /status, /target, /heartbeat, and /reset contract is deliberately
 // removed. Read-only requests have no control side effects. A remote POWER_ON

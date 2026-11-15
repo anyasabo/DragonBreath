@@ -7,6 +7,11 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Changed
+- The HTTP server waits at most 3 s (was the ESP-IDF default of 5 s) for each
+  socket receive and send. The server has one task, so a slow or stalled LAN
+  client now holds it for a shorter time.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

@@ -284,6 +284,8 @@ These predate/sit beside the versioned control surface and are stable:
   changed selection is saved but requires a reboot to take effect.
 - `POST /settings?max=<°C>&comms_ms=<ms>&cool_release=<°C>&fb_cut=<°C>&filter_temp=<°C>&filter_auto=<0|1>&leds_enabled=<0|1>&swap_thermistors=<0|1>` — update any subset.
   If one field is bad, the response is HTTP 400 and no field changes.
+  An HTTP 500 comes after a failed save of the filtration band, the LED setting
+  or the thermistor mapping. Then the fields before it can already be applied.
   Auth-gated (`X-DragonBreath-Auth`). Safety values are clamped to the safe
   envelope server-side (the max-target ceiling can never exceed the absolute cap,
   the comms watchdog stays within its min/max) and the clamped effective values

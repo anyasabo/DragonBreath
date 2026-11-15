@@ -64,6 +64,31 @@ int main(void)
     CHECK(strcmp(pb_httpd_settings_parse("max=nan", &s), "bad max") == 0);
     CHECK(strcmp(pb_httpd_settings_parse("fb_cut=95x", &s), "bad fb_cut") == 0);
 
+    // Unsigned integers: no sign, no leading whitespace, no value above
+    // UINT32_MAX. On the host, strtoul() gave 4294967296 & 0xffffffff = 0, so
+    // leds_enabled=4294967296 was "off". On the ESP32-C3 it was ULONG_MAX: "on".
+    uint32_t u = 7;
+    CHECK(pb_httpd_parse_u32("0", &u) && u == 0);
+    CHECK(pb_httpd_parse_u32("30000", &u) && u == 30000);
+    CHECK(pb_httpd_parse_u32("4294967295", &u) && u == UINT32_MAX);
+    CHECK(pb_httpd_parse_u32("5 ", &u) && u == 5);
+    u = 7;
+    CHECK(!pb_httpd_parse_u32("4294967296", &u));
+    CHECK(!pb_httpd_parse_u32("18446744073709551616", &u));   // ERANGE
+    CHECK(!pb_httpd_parse_u32("99999999999999999999999999", &u));
+    CHECK(!pb_httpd_parse_u32("-1", &u));
+    CHECK(!pb_httpd_parse_u32("-0", &u));
+    CHECK(!pb_httpd_parse_u32("+1", &u));
+    CHECK(!pb_httpd_parse_u32(" 1", &u));
+    CHECK(!pb_httpd_parse_u32("\t1", &u));
+    CHECK(!pb_httpd_parse_u32("", &u));
+    CHECK(!pb_httpd_parse_u32("1x", &u));
+    CHECK(!pb_httpd_parse_u32("0x10", &u));
+    CHECK(u == 7);
+    CHECK(strcmp(pb_httpd_settings_parse("leds_enabled=4294967296", &s), "bad leds_enabled") == 0);
+    CHECK(strcmp(pb_httpd_settings_parse("comms_ms=-1", &s), "bad comms_ms") == 0);
+    CHECK(strcmp(pb_httpd_settings_parse("filter_auto= 1", &s), "bad filter_auto") == 0);
+
     // No known field.
     CHECK(pb_httpd_settings_parse("other=1", &s) == NULL);
     CHECK(!s.has_max && !s.has_comms_ms && !s.has_filter_temp && !s.has_swap);

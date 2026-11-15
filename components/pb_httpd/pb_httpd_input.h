@@ -5,6 +5,7 @@
 
 #include "esp_http_server.h"
 #include "pb_policy.h"
+#include <errno.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,13 +26,18 @@ static inline bool pb_httpd_parse_temp(const char *s, float *out)
     return true;
 }
 
-// Parse an unsigned integer (no sign, no junk, no overflow past u32).
+// Parse a decimal integer in 0..UINT32_MAX. The first character must be a
+// digit. Thus a sign ("-1", "+1") and leading whitespace are bad. A value
+// above UINT32_MAX is bad. strtoul() alone accepts "-1" as ULONG_MAX, and
+// unsigned long has 64 bits on a host but 32 bits on the ESP32-C3. strtoull()
+// has 64 bits on both, so the host test checks the device behaviour.
 static inline bool pb_httpd_parse_u32(const char *s, uint32_t *out)
 {
-    if (!s || !*s) return false;
+    if (!s || *s < '0' || *s > '9') return false;
     char *end = NULL;
-    unsigned long v = strtoul(s, &end, 10);
-    if (end == s) return false;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (errno == ERANGE || v > UINT32_MAX) return false;
     while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
     if (*end != '\0') return false;
     *out = (uint32_t)v;

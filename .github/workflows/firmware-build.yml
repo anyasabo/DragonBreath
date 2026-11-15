@@ -41,41 +41,94 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Host unit tests: small C programs, no ESP-IDF. The container matches the
+  # devspace (Ubuntu 26.10). Each entry builds all tests with one compiler.
+  # Ubuntu 26.10 support ends in about July 2027. Move the image (here and in
+  # the coverage job) to the new Ubuntu release at each release.
+  # ASan and LSan run in the default Docker seccomp profile. If LSan fails
+  # with a ptrace error, add `options: --security-opt seccomp=unconfined`.
+  host-tests:
+    name: host-tests (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    container: ubuntu:26.10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc
+            cc: gcc-16
+            cflags: ''
+          - name: gcc-asan-ubsan
+            cc: gcc-16
+            cflags: -fsanitize=address,undefined -fno-sanitize-recover=all -g
+          - name: clang-asan-ubsan
+            cc: clang
+            cflags: -fsanitize=address,undefined -fno-sanitize-recover=all -g
+    steps:
+      - name: Install compilers
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gcc-16 clang libclang-rt-dev libc6-dev
+          "${{ matrix.cc }}" --version
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run host tests
+        env:
+          CC: ${{ matrix.cc }}
+          HOST_TEST_CFLAGS: ${{ matrix.cflags }}
+        run: sh tests/run_host_tests.sh
+
+  # Line coverage of the host tests (gcc --coverage + gcovr). Report only: no
+  # coverage number fails the job.
+  coverage:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.10
+    steps:
+      - name: Install tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gcc-16 libc6-dev pipx
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run host tests with coverage
+        # Use a relative path: in a container job, github.workspace is the
+        # path on the host, not the path in the container.
+        env:
+          CC: gcc-16
+          HOST_TEST_CFLAGS: --coverage -O0
+        run: |
+          export TMPDIR="$PWD/coverage-obj"
+          mkdir -p "$TMPDIR"
+          sh tests/run_host_tests.sh
+
+      - name: Coverage report
+        run: |
+          mkdir -p coverage-html
+          pipx run gcovr==8.8 --gcov-executable gcov-16 \
+            --root . --filter 'components/' coverage-obj \
+            --txt coverage.txt --html-details coverage-html/index.html
+          cat coverage.txt
+          {
+            echo '## Host test coverage (components/)'
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: host-test-coverage
+          path: coverage-html/
+
   build:
+    needs: [host-tests]
     runs-on: ubuntu-latest
     steps:
       # SHA-pinned (supply-chain); trailing comment tracks the human version.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Test authoritative policy state machine
-        run: sh tests/run_policy_host_test.sh
-
-      - name: Test front-panel button state machine
-        run: sh tests/run_buttons_host_test.sh
-
-      - name: Test sensor-calibration safety clamp (set + NVS-load bound)
-        run: sh tests/run_ntc_calibration_host_test.sh
-
-      - name: Test NTC sample classifier (open / short / rail fail-status)
-        run: sh tests/run_ntc_status_host_test.sh
-
-      - name: Test persistent fault-latch boot restore (fail-safe)
-        run: sh tests/run_heater_fault_host_test.sh
-
-      - name: Test heater safety-trip decision (over-temp / fail-closed / watchdog)
-        run: sh tests/run_heater_safety_host_test.sh
-
-      - name: Test zero-cross duplicate-edge filter
-        run: sh tests/run_fan_zc_host_test.sh
-
-      - name: Test chamber dc_pid integration and safety hold
-        run: sh tests/run_heater_pid_host_test.sh
-
-      - name: Test MQTT-Klipper arming state machine (retained-aware arm/heartbeat)
-        run: sh tests/run_db_klipper_mqtt_host_test.sh
-
-      - name: Test portal config validation and change planning
-        run: sh tests/run_db_portal_config_host_test.sh
 
       - name: Test HIL scenario runner
         run: python3 -m unittest tests/test_hil_runner.py

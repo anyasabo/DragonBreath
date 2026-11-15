@@ -103,6 +103,15 @@ static void add_num1(cJSON *o, const char *key, float v)
     cJSON_AddRawToObject(o, key, b);
 }
 
+// Add integer tenths of a degree as a 1-decimal JSON number (no float math).
+static void add_dc(cJSON *o, const char *key, int32_t dc)
+{
+    char b[16];
+    int32_t a = dc < 0 ? -dc : dc;
+    snprintf(b, sizeof b, "%s%ld.%ld", dc < 0 ? "-" : "", (long)(a / 10), (long)(a % 10));
+    cJSON_AddRawToObject(o, key, b);
+}
+
 static void add_num3(cJSON *o, const char *key, float v)
 {
     char b[20];
@@ -255,6 +264,19 @@ static cJSON *state_json(const pb_policy_snapshot_t *s)
     cJSON_AddNumberToObject(pj, "dry_hours", s->params.dry_hours);
     add_num1(pj, "filter_temp_c", s->params.filter_temp_c);
     cJSON_AddBoolToObject(pj, "filter_auto_enable", s->params.filter_auto_enable);
+
+    // First-heat check (docs/SAFETY.md). `state` is this session, `stored` the
+    // NVS result, `stock_hint` the stock firmware's ntc_bit (never applied).
+    pb_heater_first_heat_t fh;
+    pb_heater_get_first_heat(&fh);
+    cJSON *first_heat = cJSON_AddObjectToObject(o, "first_heat");
+    cJSON_AddStringToObject(first_heat, "state", pb_heater_first_heat_state_str(fh.state));
+    add_dc(first_heat, "ptc_rise_c", fh.ptc_rise_dc);
+    add_dc(first_heat, "ch_rise_c", fh.ch_rise_dc);
+    cJSON_AddNumberToObject(first_heat, "on_ms", fh.on_ms);
+    cJSON_AddStringToObject(first_heat, "stored", pb_heater_first_heat_stored_str(fh.stored));
+    cJSON_AddStringToObject(first_heat, "stock_hint", pb_heater_first_heat_stock_str(fh.stock_hint));
+    cJSON_AddBoolToObject(first_heat, "enforced", fh.enforced);
 
     cJSON *safety = cJSON_AddObjectToObject(o, "safety");
     cJSON_AddBoolToObject(safety, "fault_latched", s->fault_latched);
@@ -738,7 +760,9 @@ static esp_err_t settings_send(httpd_req_t *req)
     // Board's per-Rref foldback-cut default (shown as the slider's "auto" value).
     float fbdef_cut, fbdef_resume;
     pb_heater_foldback_thresholds(pb_ntc_rref_kohm(), &fbdef_cut, &fbdef_resume);
-    char buf[720];
+    pb_heater_first_heat_t fh;
+    pb_heater_get_first_heat(&fh);
+    char buf[840];
     int n = snprintf(buf, sizeof buf,
         "{\"max\":%.1f,\"max_min\":%.1f,\"max_abs\":%.1f,"
         "\"comms_ms\":%u,\"comms_ms_min\":%u,\"comms_ms_max\":%u,"
@@ -747,7 +771,8 @@ static esp_err_t settings_send(httpd_req_t *req)
         "\"filter_temp\":%.1f,\"filter_temp_min\":%.1f,\"filter_temp_max\":%.1f,"
         "\"filter_auto\":%s,"
         "\"leds_enabled\":%s,"
-        "\"swap_thermistors\":%s,\"swap_thermistors_active\":%s}",
+        "\"swap_thermistors\":%s,\"swap_thermistors_active\":%s,"
+        "\"first_heat_stored\":\"%s\",\"first_heat_stock_hint\":\"%s\"}",
         (double)pb_heater_get_max_target_c(),
         (double)PB_HEATER_MIN_TARGET_C,
         (double)PB_HEATER_ABS_MAX_TARGET_C,
@@ -767,7 +792,13 @@ static esp_err_t settings_send(httpd_req_t *req)
         pb_policy_get_filter_auto_enable() ? "true" : "false",
         pb_leds_get_enabled() ? "true" : "false",
         pb_ntc_get_swap_thermistors() ? "true" : "false",
-        pb_ntc_get_swap_thermistors_active() ? "true" : "false");
+        pb_ntc_get_swap_thermistors_active() ? "true" : "false",
+        pb_heater_first_heat_stored_str(fh.stored),
+        pb_heater_first_heat_stock_str(fh.stock_hint));
+    if (n < 0 || n >= (int)sizeof buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "settings too long");
+        return ESP_FAIL;
+    }
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, n);
 }
@@ -806,7 +837,8 @@ static bool parse_u32(const char *s, uint32_t *out)
     return true;
 }
 
-// POST /settings?max=<C>&comms_ms=<ms>&cool_release=<C>&fb_cut=<C>&leds_enabled=<0|1>&swap_thermistors=<0|1> —
+// POST /settings?max=<C>&comms_ms=<ms>&cool_release=<C>&fb_cut=<C>&leds_enabled=<0|1>&swap_thermistors=<0|1>
+//      &first_heat_rerun=1&first_heat_apply_swap=1 —
 // update any subset. Auth-gated. Each field is optional; the safety values are
 // clamped to the safe envelope by pb_heater's setters (the ceiling can never
 // exceed 70 C; the comms deadman stays within [10s, 5min]; cool_release within
@@ -889,8 +921,38 @@ static esp_err_t settings_post(httpd_req_t *req)
                              "could not save thermistor mapping", NULL);
         applied = true;
     }
+    // First-heat actions. apply_swap stages the swap that a stored "crossed"
+    // result suggests (it applies after a reboot, like swap_thermistors). The
+    // firmware never applies it by itself.
+    if (httpd_query_key_value(q, "first_heat_apply_swap", v, sizeof v) == ESP_OK) {
+        uint32_t on;
+        if (!parse_u32(v, &on) || on != 1) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad first_heat_apply_swap");
+            return ESP_FAIL;
+        }
+        pb_heater_first_heat_t fh;
+        pb_heater_get_first_heat(&fh);
+        if (fh.stored != PB_FH_STORED_CROSSED)
+            return api_error(req, "409 Conflict", "invalid_command",
+                             "no stored first-heat result suggests a swap", NULL);
+        if (pb_ntc_set_swap_thermistors(!pb_ntc_get_swap_thermistors_active()) != ESP_OK)
+            return api_error(req, "500 Internal Server Error", "persist_failed",
+                             "could not save thermistor mapping", NULL);
+        applied = true;
+    }
+    if (httpd_query_key_value(q, "first_heat_rerun", v, sizeof v) == ESP_OK) {
+        uint32_t on;
+        if (!parse_u32(v, &on) || on != 1) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad first_heat_rerun");
+            return ESP_FAIL;
+        }
+        if (pb_heater_first_heat_rerun() != ESP_OK)
+            return api_error(req, "500 Internal Server Error", "persist_failed",
+                             "first-heat re-run applies, but could not be saved", NULL);
+        applied = true;
+    }
     if (!applied) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no known settings (max, comms_ms, cool_release, fb_cut, filter_temp, filter_auto, leds_enabled, swap_thermistors)");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no known settings (max, comms_ms, cool_release, fb_cut, filter_temp, filter_auto, leds_enabled, swap_thermistors, first_heat_rerun, first_heat_apply_swap)");
         return ESP_FAIL;
     }
     return settings_send(req);   // echo the clamped result

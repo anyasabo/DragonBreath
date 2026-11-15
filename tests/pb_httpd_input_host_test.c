@@ -1,5 +1,5 @@
 // Host test for pb_httpd_input.h: POST /settings checks every field before it
-// applies one.
+// applies one, and a JSON zone target above 255 does not wrap.
 #include "pb_httpd_input.h"
 
 #include <stdio.h>
@@ -67,6 +67,13 @@ int main(void)
     // No known field.
     CHECK(pb_httpd_settings_parse("other=1", &s) == NULL);
     CHECK(!s.has_max && !s.has_comms_ms && !s.has_filter_temp && !s.has_swap);
+
+    // Zone targets: no wrap above 255 (dc_bambu then clamps to 70).
+    CHECK(pb_httpd_zone_target_c(-3.0) == 0);
+    CHECK(pb_httpd_zone_target_c(45.9) == 45);
+    CHECK(pb_httpd_zone_target_c(256.0) == 255);
+    CHECK(pb_httpd_zone_target_c(300.0) == 255);
+    CHECK(pb_httpd_zone_target_c(1e300) == 255);
 
     puts("pb_httpd_input host test: OK");
     return 0;

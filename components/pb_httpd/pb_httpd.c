@@ -955,14 +955,14 @@ static esp_err_t zones_post(httpd_req_t *req)
             cJSON *nm = cJSON_GetObjectItemCaseSensitive(e, "name");
             double t;
             if (cJSON_IsString(nm) && json_number(e, "target_c", &t)
-                && dc_bambu_zone_set(nm->valuestring, (uint8_t)(t < 0 ? 0 : t)) == ESP_OK)
+                && dc_bambu_zone_set(nm->valuestring, pb_httpd_zone_target_c(t)) == ESP_OK)
                 applied = true;
         }
     } else {
         cJSON *nm = cJSON_GetObjectItemCaseSensitive(root, "name");
         double t;
         if (cJSON_IsString(nm) && json_number(root, "target_c", &t)
-            && dc_bambu_zone_set(nm->valuestring, (uint8_t)(t < 0 ? 0 : t)) == ESP_OK)
+            && dc_bambu_zone_set(nm->valuestring, pb_httpd_zone_target_c(t)) == ESP_OK)
             applied = true;
     }
     cJSON_Delete(root);

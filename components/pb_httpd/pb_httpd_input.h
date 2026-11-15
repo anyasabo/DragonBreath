@@ -96,3 +96,13 @@ static inline const char *pb_httpd_settings_parse(const char *q, pb_httpd_settin
     }
     return NULL;
 }
+
+// Convert a finite JSON zone target to the uint8_t of dc_bambu_zone_set(),
+// which clamps it to 70. A cast of a value above 255 is undefined behaviour:
+// on the ESP32-C3 it wraps, so 300 became 44 and 256 became 0 (zone off).
+static inline uint8_t pb_httpd_zone_target_c(double t)
+{
+    if (t < 0) return 0;
+    if (t > UINT8_MAX) return UINT8_MAX;
+    return (uint8_t)t;
+}

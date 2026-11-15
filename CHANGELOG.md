@@ -11,6 +11,10 @@ below into the GitHub Release notes.
 - **`POST /settings` applies all fields or none.** The handler applied each
   field as soon as it read it. A bad field after a good one gave HTTP 400, but the
   good field was already saved. Now the handler checks every field first.
+- **`POST /api/v2/zones`: a target above 255 °C no longer wraps.** The cast to
+  8 bits was undefined behaviour. On the ESP32-C3, 300 became 44 °C and 256
+  became 0 (zone off). Now a target above 255 is clamped, and dc_bambu clamps it
+  to 70 °C.
 
 ## [1.1.19] - 2026-09-23
 

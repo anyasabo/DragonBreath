@@ -74,7 +74,7 @@ jobs:
       - name: Test MQTT-Klipper arming state machine (retained-aware arm/heartbeat)
         run: sh tests/run_db_klipper_mqtt_host_test.sh
 
-      - name: Test HTTP input checks (settings fields)
+      - name: Test HTTP input checks (settings fields, zone targets)
         run: sh tests/run_httpd_input_host_test.sh
 
       - name: Test portal config validation and change planning

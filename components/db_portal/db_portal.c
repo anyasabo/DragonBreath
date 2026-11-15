@@ -17,6 +17,7 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "nvs.h"
+#include "pb_httpd_body.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -854,9 +855,8 @@ static esp_err_t presets_post(httpd_req_t *req)
     int len = req->content_len;
     if (len <= 0 || len > 256) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body"); return ESP_FAIL; }
     char buf[257];
-    int r = httpd_req_recv(req, buf, len);
-    if (r <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "recv failed"); return ESP_FAIL; }
-    buf[r] = '\0';
+    if (!pb_httpd_read_body(req, buf, (size_t)len)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "recv failed"); return ESP_FAIL; }
+    buf[len] = '\0';
     cJSON *body = cJSON_Parse(buf);
     cJSON *arr = body ? cJSON_GetObjectItemCaseSensitive(body, "presets") : NULL;
     if (!cJSON_IsArray(arr) || cJSON_GetArraySize(arr) != QP_COUNT) {

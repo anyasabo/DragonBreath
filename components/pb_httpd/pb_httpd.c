@@ -9,6 +9,7 @@
 #include "dc_moonraker.h"
 #include "dc_prusa.h"
 #include "dc_evlog.h"
+#include "pb_httpd_body.h"
 
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -306,15 +307,9 @@ static cJSON *recv_json(httpd_req_t *req)
 {
     if (req->content_len <= 0 || req->content_len > API_BODY_MAX) return NULL;
     char body[API_BODY_MAX + 1];
-    int got = 0;
-    while (got < req->content_len) {
-        int r = httpd_req_recv(req, body + got, req->content_len - got);
-        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
-        if (r <= 0) return NULL;
-        got += r;
-    }
-    body[got] = '\0';
-    return cJSON_ParseWithLength(body, got);
+    if (!pb_httpd_read_body(req, body, req->content_len)) return NULL;
+    body[req->content_len] = '\0';
+    return cJSON_ParseWithLength(body, req->content_len);
 }
 
 static bool json_number(const cJSON *o, const char *key, double *out)
@@ -818,10 +813,12 @@ static esp_err_t settings_post(httpd_req_t *req)
 
     char q[128];
     if (httpd_req_get_url_query_str(req, q, sizeof q) != ESP_OK) {
-        // Fall back to a query-style body ("max=60&comms_ms=30000").
-        int r = httpd_req_recv(req, q, sizeof q - 1);
-        if (r <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no settings given"); return ESP_FAIL; }
-        q[r] = '\0';
+        // Fall back to a query-style body ("max=60&comms_ms=30000"). Read all of
+        // it: a part of the body can end in a part of a value ("max=6").
+        size_t len = req->content_len;
+        if (len >= sizeof q) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "settings body too long"); return ESP_FAIL; }
+        if (len == 0 || !pb_httpd_read_body(req, q, len)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no settings given"); return ESP_FAIL; }
+        q[len] = '\0';
     }
 
     bool applied = false;
@@ -1171,14 +1168,12 @@ static esp_err_t factory_reset_post(httpd_req_t *req)
             && httpd_query_key_value(q, "confirm", v, sizeof v) == ESP_OK
             && strcmp(v, "factory-reset") == 0)
         confirmed = true;
-    if (!confirmed && req->content_len > 0) {
-        int r = httpd_req_recv(req, q, sizeof q - 1);
-        if (r > 0) {
-            q[r] = '\0';
-            if (httpd_query_key_value(q, "confirm", v, sizeof v) == ESP_OK
-                    && strcmp(v, "factory-reset") == 0)
-                confirmed = true;
-        }
+    if (!confirmed && req->content_len > 0 && req->content_len < sizeof q
+            && pb_httpd_read_body(req, q, req->content_len)) {
+        q[req->content_len] = '\0';
+        if (httpd_query_key_value(q, "confirm", v, sizeof v) == ESP_OK
+                && strcmp(v, "factory-reset") == 0)
+            confirmed = true;
     }
     if (!confirmed)
         return api_error(req, "400 Bad Request", "confirmation_required",

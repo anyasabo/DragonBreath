@@ -7,6 +7,13 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- New build option `CONFIG_DB_DEFAULT_AP_MODE` (Always, Temporary, Fallback or
+  Off). It sets the setup AP mode for a device that has no stored AP mode. The
+  default is Always, the same as before, and writes nothing to NVS. The other
+  choices write the `ap_mode` NVS key once, before Wi-Fi starts. A stored user
+  choice always wins. See README "Setup AP mode".
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

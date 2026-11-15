@@ -1,0 +1,30 @@
+menu "DragonBreath Wi-Fi defaults"
+
+    choice DB_DEFAULT_AP_MODE
+        prompt "Setup AP mode for a device with no stored AP mode"
+        default DB_DEFAULT_AP_MODE_ALWAYS
+        help
+            The setup AP mode that a device uses when NVS has no AP mode
+            (a new device, a device that never changed the AP mode, or a device
+            after a front-panel or factory reset). A stored user choice always
+            wins. With no saved Wi-Fi credentials, the setup AP is always on,
+            whatever this mode is.
+
+            ALWAYS (default) does not write NVS: dc_wifi uses its own default.
+            The other choices write the "ap_mode" NVS key once, before
+            dc_wifi_start().
+
+        config DB_DEFAULT_AP_MODE_ALWAYS
+            bool "Always: the setup AP stays on next to the Wi-Fi station"
+        config DB_DEFAULT_AP_MODE_TEMP
+            bool "Temporary: the setup AP stays on for 15 minutes after boot"
+        config DB_DEFAULT_AP_MODE_FALLBACK
+            bool "Fallback: the setup AP starts only if the station cannot join"
+        config DB_DEFAULT_AP_MODE_OFF
+            bool "Off: no setup AP while credentials are stored"
+            help
+                If the station cannot join, there is no setup AP. To recover,
+                hold Power + Auto for 5 s, or erase NVS over USB.
+    endchoice
+
+endmenu

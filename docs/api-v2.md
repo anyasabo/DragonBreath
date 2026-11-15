@@ -417,6 +417,34 @@ These predate/sit beside the versioned control surface and are stable:
   **not** settable.
   `swap_thermistors` exchanges the two logical sensor inputs and their cutoff
   roles; a changed mapping is applied after reboot.
+- Syslog and NTP settings. They are fields of the product setup schema of
+  `dc_portal`, in the section "Syslog and time" of `GET /api/v1/provisioning`
+  (`product_setup`). To change them, send
+  `POST /api/v1/provisioning/product` with the body
+  `{"values":{"sl_host":"alloy.lan","sl_port":514,"ntp_host":"ntp.lan"}}`
+  (auth-gated, each field optional):
+  - `sl_host`: the syslog server, a host name or an IPv4 address (63 characters
+    maximum). `""` (the default) turns syslog off.
+  - `sl_port`: the UDP port of the syslog server, 1–65535 (default 514). An
+    empty string keeps the saved port.
+  - `ntp_host`: an NTP server, a host name or an IPv4 address. `""` (the
+    default) means only the NTP server from DHCP (option 42).
+
+  The device validates the fields before it saves any field. A host name has
+  labels of letters, digits and hyphens, separated by dots. If a field is not
+  valid, the response is HTTP 400 and names the field. The values are in NVS
+  (`app_nvs`: `sl_host`, `sl_port`, `ntp_host`). They apply after a restart.
+  A factory reset erases them.
+
+  If `sl_host` is set, the device sends its ESP-IDF log as RFC 5424 syslog over
+  UDP: APP-NAME `dragonbreath`, HOSTNAME the device host name, PROCID the log
+  tag, and the structured data `[dc@32473 seq="N" up="MS"]` (sequence number and
+  uptime in ms). A gap in `seq` shows dropped lines. If `sl_host` or `ntp_host`
+  is set, SNTP runs. The wall clock gives only the syslog TIMESTAMP. Before the
+  first sync, TIMESTAMP is `-`. Nothing that is related to safety or control
+  uses the wall clock. SNTP gets the NTP server from DHCP only from the first
+  DHCP renewal or reconnect after boot. If the timestamps are important, set
+  `ntp_host`.
 - `GET /api/v2/calibration` — the per-channel temperature calibration offsets plus
   their bounds and the live readings:
   `{"api_version":2,"chamber_offset_c","ptc_offset_c","min":-5,"max":5,"chamber_c","ptc_c","chamber_raw_c","ptc_raw_c"}`.

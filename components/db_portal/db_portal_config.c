@@ -50,19 +50,22 @@ esp_err_t db_portal_plan_product_save(
     const pb_ha_config_t *current_ha,
     const db_km_config_t *current_klipper_mqtt,
     const dc_prusa_config_t *current_prusa,
+    const pb_netlog_config_t *current_netlog,
     db_portal_product_plan_t *plan,
     char *message,
     size_t message_size)
 {
     if (!request || !current_moonraker || !current_bambu || !current_ha ||
-        !current_klipper_mqtt || !current_prusa || !plan || !message || !message_size)
+        !current_klipper_mqtt || !current_prusa || !current_netlog || !plan ||
+        !message || !message_size)
         return ESP_ERR_INVALID_ARG;
     if (request->source_present &&
         (request->source < DC_SRC_KLIPPER || request->source >= DC_SRC_MAX))
         return invalid_field("ctl_src", message, message_size);
     if ((request->mr_port.present && !request->mr_port.value) ||
         (request->ha_port.present && !request->ha_port.value) ||
-        (request->km_port.present && !request->km_port.value))
+        (request->km_port.present && !request->km_port.value) ||
+        (request->sl_port.present && !request->sl_port.value))
         return invalid_field("port", message, message_size);
 
     memset(plan, 0, sizeof(*plan));
@@ -72,6 +75,7 @@ esp_err_t db_portal_plan_product_save(
     plan->ha = *current_ha;
     plan->klipper_mqtt = *current_klipper_mqtt;
     plan->prusa = *current_prusa;
+    plan->netlog = *current_netlog;
 
     if (request->source_present && request->source != current_source) {
         plan->source = request->source;
@@ -113,6 +117,14 @@ esp_err_t db_portal_plan_product_save(
 
     STAGE_TEXT(prusa, pr_host, host, false);
     STAGE_TEXT(prusa, pr_key, api_key, true);
+
+    STAGE_TEXT(netlog, sl_host, syslog_host, false);
+    STAGE_TEXT(netlog, ntp_host, ntp_host, false);
+    stage_port(&request->sl_port, &plan->netlog.syslog_port, &plan->netlog_changed);
+    if (!pb_netlog_host_valid(plan->netlog.syslog_host))
+        return invalid_field("sl_host", message, message_size);
+    if (!pb_netlog_host_valid(plan->netlog.ntp_host))
+        return invalid_field("ntp_host", message, message_size);
 
 #undef STAGE_TEXT
     message[0] = '\0';

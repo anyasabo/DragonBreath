@@ -22,6 +22,18 @@ below into the GitHub Release notes.
 - `GET /api/v2/state` reports `reset_reason` (the `esp_reset_reason()` of this boot,
   for example `poweron` or `task_wdt`).
 - The firmware counts boots in NVS (`app_nvs/boot_cnt`).
+- Syslog and NTP settings (Setup → "Syslog and time", or the product fields
+  `sl_host`, `sl_port` and `ntp_host` of `POST /api/v1/provisioning/product`).
+  If a syslog server is set, the device sends its ESP-IDF log as RFC 5424 over
+  UDP (dragon-core `dc_syslog`, APP-NAME `dragonbreath`). The default is off.
+  SNTP (dragon-core `dc_time`) gives the log lines a UTC timestamp. It uses the
+  NTP server from DHCP. If `ntp_host` is set, SNTP also uses that server. The
+  default `ntp_host` is empty. Nothing related to safety or control uses the wall clock. A change
+  applies after a restart. With syslog on, the heap use increases by
+  approximately 8 KB. See `docs/api-v2.md`.
+- `sdkconfig.defaults` sets `CONFIG_LWIP_DHCP_GET_NTP_SRV=y` and
+  `CONFIG_LWIP_SNTP_MAX_SERVERS=2` for the NTP server from DHCP and a second
+  server.
 - `sdkconfig.defaults` turns on the FreeRTOS trace facility and the run-time
   stats (64-bit counter) for the per-task metrics. Static DRAM use increases by
   approximately 1.7 KB.

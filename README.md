@@ -139,6 +139,7 @@ without touching the firmware.
 | HIL (`pb_hil` / `tools/hil.py`) | ✅ CH341 devboard suite and non-heating real-Panda UART build/flash/no-flash workflows qualified on hardware; native-USB runtime pending on the tested devboard |
 | Control source (`dc_source`) | ✅ Single-select on `/setup`: Klipper/Moonraker (default) · Klipper MQTT · Home Assistant MQTT Discovery · Bambu LAN MQTT · PrusaLink; optional HA telemetry remains read-only when another source controls heat |
 | On-device diagnostics pages | ✅ `/diag` (live SSE telemetry + trend + CSV) and `/console` (firmware `ESP_LOGx` viewer via auth-gated `GET /api/v2/console`) — shipped v0.8.0 |
+| Syslog + NTP (`pb_netlog`) | Optional RFC 5424 syslog over UDP (`dc_syslog`) with SNTP log timestamps (`dc_time`); set the server in Setup → "Syslog and time" (empty = off). Needs a hardware check. |
 | Diagnostics (`tools/diag.py`) | ✅ Read-only 2 Hz logger (chamber/PTC/SSR/mode/fault + resolved Rref) → live view + CSV; run during a heat cycle to capture behavior. `python3 tools/diag.py [host] [token]` |
 
 **Shared-core boundary:** board-agnostic infrastructure is consumed from the pinned
@@ -351,13 +352,15 @@ components/
   pb_buttons/  front-panel button poll/debounce + short/long-press
   pb_hil/      JSON serial HIL console + safe dev-board injection
   pb_httpd/    DragonBreath HTTP control API (registered on the core server)
+  pb_netlog/   syslog + NTP settings (NVS) and their start at boot
   db_portal/   product schema, auth, OTA identity + heater-safety adapter
 main/          app_main: safety-first init + control loop
 docs/          hardware map, safety model, HIL guide, NTC RE report
 ```
 
 Managed components fetched from `dragon-core` are `dc_evlog`, `dc_source`,
-`dc_bambu`, `dc_wifi`, `dc_moonraker`, `dc_ui`, `dc_mqtt`, and `dc_portal`; they are
+`dc_bambu`, `dc_wifi`, `dc_moonraker`, `dc_ui`, `dc_mqtt`, `dc_portal`, `dc_time`
+and `dc_syslog`; they are
 not stored under this repository's `components/` directory. `dc_portal` owns the
 HTTP server, shared SPA, same-LAN/AP provisioning, captive DNS, logs, OTA and
 factory-reset transport. DragonBreath registers its product API and safety policy

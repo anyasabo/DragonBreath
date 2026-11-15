@@ -40,9 +40,12 @@ static esp_err_t plan(const db_portal_product_request_t *request,
     pb_ha_config_t ha = {0};
     db_km_config_t km = {0};
     dc_prusa_config_t pr = {0};
+    pb_netlog_config_t nl;
     current_configs(&mr, &bb, &ha, &km, &pr);
+    pb_netlog_config_default(&nl);
+    snprintf(nl.ntp_host, sizeof(nl.ntp_host), "ntp.lan");
     return db_portal_plan_product_save(request, DC_SRC_KLIPPER, &mr, &bb, &ha,
-                                       &km, &pr, out, message, size);
+                                       &km, &pr, &nl, out, message, size);
 }
 
 int main(void)
@@ -79,11 +82,13 @@ int main(void)
         .km_inst = {true, "printer"}, .km_topic = {true, "dragonbreath"},
         .km_tls = {true, false}, .km_writeback = {true, true},
         .pr_host = {true, "prusa.lan"}, .pr_key = {true, ""},
+        .sl_host = {true, ""}, .sl_port = {true, 514}, .ntp_host = {true, "ntp.lan"},
     };
     assert(plan(&unchanged, &result, message, sizeof(message)) == ESP_OK);
     assert(!result.source_changed && !result.moonraker_changed &&
            !result.bambu_changed && !result.ha_changed &&
-           !result.klipper_mqtt_changed && !result.prusa_changed);
+           !result.klipper_mqtt_changed && !result.prusa_changed &&
+           !result.netlog_changed);
 
     // Blank secrets retain credentials while ordinary changed fields are staged.
     db_portal_product_request_t changed = {
@@ -160,6 +165,66 @@ int main(void)
     db_portal_product_request_t invalid_port = {.ha_port = {true, 0}};
     assert(plan(&invalid_port, &result, message, sizeof(message)) == ESP_ERR_INVALID_ARG);
     assert(strstr(message, "port") != NULL);
+
+    // Syslog and NTP: a host name or an IPv4 address is staged, the port too.
+    db_portal_product_request_t netlog = {
+        .sl_host = {true, "192.168.1.10"}, .sl_port = {true, 1514},
+    };
+    assert(plan(&netlog, &result, message, sizeof(message)) == ESP_OK);
+    assert(result.netlog_changed);
+    assert(strcmp(result.netlog.syslog_host, "192.168.1.10") == 0);
+    assert(result.netlog.syslog_port == 1514);
+    assert(strcmp(result.netlog.ntp_host, "ntp.lan") == 0);
+    assert(!result.moonraker_changed && !result.source_changed);
+
+    // An empty NTP server is valid: it means the DHCP server only.
+    db_portal_product_request_t ntp_off = {.ntp_host = {true, ""}};
+    assert(plan(&ntp_off, &result, message, sizeof(message)) == ESP_OK);
+    assert(result.netlog_changed && result.netlog.ntp_host[0] == '\0');
+
+    // Not a host name: the plan refuses it and names the field.
+    db_portal_product_request_t bad_syslog = {.sl_host = {true, "alloy lan"}};
+    assert(plan(&bad_syslog, &result, message, sizeof(message)) == ESP_ERR_INVALID_ARG);
+    assert(strstr(message, "sl_host") != NULL);
+    db_portal_product_request_t bad_ntp = {.ntp_host = {true, "-ntp.lan"}};
+    assert(plan(&bad_ntp, &result, message, sizeof(message)) == ESP_ERR_INVALID_ARG);
+    assert(strstr(message, "ntp_host") != NULL);
+    db_portal_product_request_t long_syslog = {.sl_host = {true, too_long}};
+    assert(plan(&long_syslog, &result, message, sizeof(message)) == ESP_ERR_INVALID_ARG);
+    assert(strstr(message, "sl_host") != NULL);
+    db_portal_product_request_t zero_port = {.sl_port = {true, 0}};
+    assert(plan(&zero_port, &result, message, sizeof(message)) == ESP_ERR_INVALID_ARG);
+
+    // pb_netlog_host_valid: the rules of the host name check.
+    char max_host[PB_NETLOG_HOST_MAX + 2];
+    memset(max_host, 'a', sizeof(max_host));
+    max_host[PB_NETLOG_HOST_MAX] = '\0';
+    assert(pb_netlog_host_valid(max_host));
+    max_host[PB_NETLOG_HOST_MAX] = 'a';
+    max_host[PB_NETLOG_HOST_MAX + 1] = '\0';
+    assert(!pb_netlog_host_valid(max_host));
+    assert(pb_netlog_host_valid(""));
+    assert(pb_netlog_host_valid("homeserver"));
+    assert(pb_netlog_host_valid("alloy.home-lab.lan"));
+    assert(pb_netlog_host_valid("10.0.0.1"));
+    assert(!pb_netlog_host_valid(NULL));
+    assert(!pb_netlog_host_valid("."));
+    assert(!pb_netlog_host_valid("a..b"));
+    assert(!pb_netlog_host_valid("a.b."));
+    assert(!pb_netlog_host_valid(".a"));
+    assert(!pb_netlog_host_valid("a-.b"));
+    assert(!pb_netlog_host_valid("a.-b"));
+    assert(!pb_netlog_host_valid("a-"));
+    assert(!pb_netlog_host_valid("a_b"));
+    assert(!pb_netlog_host_valid("a:514"));
+    assert(!pb_netlog_host_valid("a\nb"));
+    pb_netlog_config_t cfg;
+    pb_netlog_config_default(&cfg);
+    assert(pb_netlog_config_valid(&cfg) && cfg.syslog_port == 514 &&
+           cfg.syslog_host[0] == '\0' && cfg.ntp_host[0] == '\0');
+    cfg.syslog_port = 0;
+    assert(!pb_netlog_config_valid(&cfg));
+    assert(!pb_netlog_config_valid(NULL));
 
     puts("db portal config planning tests: PASS");
     return 0;

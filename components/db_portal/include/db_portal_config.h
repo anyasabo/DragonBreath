@@ -7,6 +7,7 @@
 #include "dc_prusa.h"
 #include "dc_source.h"
 #include "pb_ha.h"
+#include "pb_netlog_config.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -39,6 +40,8 @@ typedef struct {
     db_portal_port_value_t km_port;
     db_portal_bool_value_t km_tls, km_writeback;
     db_portal_text_value_t pr_host, pr_key;      // Prusa (PrusaLink) host + API key
+    db_portal_text_value_t sl_host, ntp_host;    // syslog server, NTP server ("" = off / DHCP)
+    db_portal_port_value_t sl_port;              // syslog UDP port
 } db_portal_product_request_t;
 
 typedef struct {
@@ -48,12 +51,14 @@ typedef struct {
     pb_ha_config_t ha;
     db_km_config_t klipper_mqtt;
     dc_prusa_config_t prusa;
+    pb_netlog_config_t netlog;
     bool source_changed;
     bool moonraker_changed;
     bool bambu_changed;
     bool ha_changed;
     bool klipper_mqtt_changed;
     bool prusa_changed;
+    bool netlog_changed;
 } db_portal_product_plan_t;
 
 // Build a complete, validated save plan without mutating runtime or NVS state.
@@ -66,6 +71,7 @@ esp_err_t db_portal_plan_product_save(
     const pb_ha_config_t *current_ha,
     const db_km_config_t *current_klipper_mqtt,
     const dc_prusa_config_t *current_prusa,
+    const pb_netlog_config_t *current_netlog,
     db_portal_product_plan_t *plan,
     char *message,
     size_t message_size);

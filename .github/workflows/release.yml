@@ -46,6 +46,9 @@ jobs:
           # console TX). Dev builds (plain `idf.py build`) omit it and keep the console.
           command: idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.release" build
 
+      - name: Check that the release enforces the first-heat check
+        run: sh tests/check_first_heat_enforced.sh build
+
       - name: Package release artifacts
         env:
           VERSION: ${{ steps.ver.outputs.version }}

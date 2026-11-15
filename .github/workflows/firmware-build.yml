@@ -68,6 +68,9 @@ jobs:
       - name: Test real heater control tick (safety paths + randomized invariants)
         run: sh tests/run_heater_tick_host_test.sh
 
+      - name: Test first-heat check report-only builds (dev board, REPORT_ONLY=y)
+        run: sh tests/run_heater_first_heat_report_only_host_test.sh
+
       - name: Test real NTC conversion and calibration bound through the heater
         run: sh tests/run_ntc_chain_host_test.sh
 
@@ -131,6 +134,9 @@ jobs:
       - name: Check API v2 contract and shared dashboard ownership
         run: |
           sh tests/check_api_v2_contract.sh
+
+      - name: Check that the production build enforces the first-heat check
+        run: sh tests/check_first_heat_enforced.sh build
 
       - name: Build safe dev-board HIL profile (ESP-IDF v5.3.5)
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1

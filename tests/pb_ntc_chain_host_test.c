@@ -291,10 +291,6 @@ static void t_swap_thermistors(void)
     uint32_t v;
     CHECK(env_nvs_read("ntc_swap", &v) && v == 0);
     CHECK(rd(PB_NTC_PTC, &t) == PB_NTC_OK && fabsf(t - 90.0f) < 0.3f);
-    env->nvs_fail_commit = ESP_FAIL;
-    CHECK(pb_ntc_set_swap_thermistors(true) == ESP_FAIL);
-    CHECK(!pb_ntc_get_swap_thermistors());
-    env->nvs_fail_commit = 0;
     env->nvs_fail_open_rw = ESP_FAIL;
     CHECK(pb_ntc_set_swap_thermistors(true) == ESP_FAIL);
     env->nvs_fail_open_rw = 0;
@@ -424,17 +420,14 @@ static void t_cal_set_persist_first(void)
     CHECK(pb_ntc_set_offset_c(PB_NTC_PTC, 2.0f) == ESP_OK);
     uint32_t v;
     CHECK(env_nvs_read("ntc_off_ptc", &v) && (int32_t)v == 200);
-    env->nvs_fail_commit = ESP_FAIL;
-    CHECK(pb_ntc_set_offset_c(PB_NTC_PTC, -3.0f) == ESP_FAIL);
-    CHECK(pb_ntc_get_offset_c(PB_NTC_PTC) == 2.0f);     // RAM unchanged
-    env->nvs_fail_commit = 0;
     env->nvs_fail_open_rw = ESP_FAIL;
     CHECK(pb_ntc_set_offset_c(PB_NTC_PTC, -3.0f) == ESP_FAIL);
     CHECK(pb_ntc_get_offset_c(PB_NTC_PTC) == 2.0f);
     env->nvs_fail_open_rw = 0;
     env->nvs_fail_set = ESP_FAIL;
     CHECK(pb_ntc_set_offset_c(PB_NTC_PTC, -3.0f) == ESP_FAIL);
-    CHECK(pb_ntc_get_offset_c(PB_NTC_PTC) == 2.0f);
+    CHECK(pb_ntc_get_offset_c(PB_NTC_PTC) == 2.0f);     // RAM unchanged
+    CHECK(env_nvs_read("ntc_off_ptc", &v) && (int32_t)v == 200);
     env->nvs_fail_set = 0;
     CHECK(pb_ntc_set_offset_c((pb_ntc_channel_t)5, 1.0f) == ESP_ERR_INVALID_ARG);
     CHECK(pb_ntc_get_offset_c((pb_ntc_channel_t)5) == 0.0f);

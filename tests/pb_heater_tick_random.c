@@ -6,7 +6,7 @@
 //
 // Each step does one random action (target, link, time, sensors, panic-off,
 // clear, settings, NVS failures, reboot ...) and then one or more control ticks.
-// After each tick an independent oracle, written from docs/SAFETY.md, checks:
+// After each tick an independent oracle checks:
 //   - the relay is on only if no trip condition holds, no fault is latched, the
 //     target is positive, both sensors read OK, the link is fresh, the element
 //     foldback and the local foldback do not cut, and the regulation
@@ -15,10 +15,37 @@
 //   - a trip condition turns the relay off in the same tick, latches with the
 //     correct code and (for a new latch) persists to NVS when NVS works,
 //   - the target never exceeds the ceiling, and the ceiling never exceeds 70 C,
-//   - with bang-bang control, the relay is on when all of the above permit heat
-//     and the chamber is below the hysteresis band (so the test is not vacuous).
+//   - bang-bang: the relay is on when all of the above permit heat and the
+//     chamber is below the hysteresis band (so the test is not vacuous),
+//   - PID: the relay follows the reported duty at the window extremes, and
+//     the reported duty is 0 while a foldback cuts.
+// At the end, the totals over all default seeds must show each trip type, an
+// element foldback cut, a local foldback cut, relay-on ticks and liveness checks.
+//
+// Where each oracle rule comes from:
+//   From docs/SAFETY.md (the specification):
+//     - the cutoffs 105 C (PTC) and 85 C (chamber), always active and latching
+//     - sensor faults and the comms watchdog trip only while heating
+//     - the watchdog timeout is clamped to [10 s, 5 min], the ceiling to 70 C
+//     - the foldback cut points per board (82k: 102 C, 33k: 99 C) and the
+//       override band [90, 104] C
+//     - hazard trips persist to NVS, panic-off and inhibit do not, and the
+//       boot latch restore is fail-safe
+//     - clear_fault is persist-first and does not restart the heat
+//   Copied from the code (pb_heater.h, pb_heater.c, pb_heater_pid.h), because
+//   SAFETY.md does not give them:
+//     - the trip priority order (PTC, chamber, chamber sensor, PTC sensor, link)
+//     - "expired" means age > timeout (not >=)
+//     - the foldback resume points (82k: 99 C, 33k: 96 C, override: cut - 3 C)
+//     - the local foldback for an external regulation value: cut at 72 C,
+//       resume below 67 C
+//     - the 1 C bang-bang hysteresis, and the PID window (30 s) and dwell (2 s)
+//     - a latch persists only on the not-latched -> latched transition (gap 1)
+//     - the 2 s throttle of the deferred persist retry
+//     - the clamps of the other settings (minimum ceiling 30 C, cool_release)
 #define _DEFAULT_SOURCE
 #include "pb_heater.h"
+#include "pb_heater_pid.h"
 #include "pb_heater_tick_host_test.h"
 
 #include <inttypes.h>
@@ -39,7 +66,6 @@ typedef struct {
     uint64_t rng;
     long step, steps, ticks;
     const char *action;            // string literal, same address in each child
-    bool strict_gaps;
 
     // Thermal model: an INPUT GENERATOR for plausible temperature traces, not a
     // claim about the physics of the Panda Breath. Two nodes (element, chamber),
@@ -74,7 +100,8 @@ typedef struct {
     long faulted_ticks, armed_ticks;
     long relay_on_ticks, liveness_checks, fb_cut_ticks, local_cut_ticks, reboots;
     long trips[PB_FAULT__COUNT];
-    long panics, clears_ok, clears_failed, gap_events;
+    long pid_liveness_checks;
+    long panics, clears_ok, clears_failed, gap1_events, gap3_events;
     bool gap_open;
 } world_t;
 
@@ -274,12 +301,12 @@ static void one_tick(void)
         if (!pre_faulted && nvs_writes_work())
             RCHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == (int)trip,
                    "trip %d was not persisted although NVS works", (int)trip);
-        if (pre_faulted && !W->expect_persist && nvs_u("fault_latch") != 1) {
-            // Known gap 1: a hazard trip on top of a RAM-only latch is not persisted.
-            if (!W->gap_open) W->gap_events++;
+        if (pre_faulted && !W->expect_persist && nvs_writes_work() &&
+            nvs_u("fault_latch") != 1) {
+            // Known gap 1: a hazard trip on top of a RAM-only latch is not
+            // persisted. Counted, not failed (see the directed gap test).
+            if (!W->gap_open) W->gap1_events++;
             W->gap_open = true;
-            RCHECK(!W->strict_gaps || !nvs_writes_work(),
-                   "hazard trip %d on top of a RAM-only latch was not persisted", (int)trip);
         }
         latch_oracle(trip, true);
     } else {
@@ -318,6 +345,23 @@ static void one_tick(void)
         reg < target - PB_HEATER_HYSTERESIS_C - 0.01f) {
         W->liveness_checks++;
         RCHECK(relay() == 1, "bang-bang: relay off although heat is permitted and demanded");
+    }
+    if (W->exp_method == PB_HEATER_METHOD_PID && trip == PB_FAULT_NONE &&
+        !pre_faulted && armed) {
+        pb_heater_telemetry_t tel;
+        pb_heater_get_telemetry(&tel);
+        if (W->fb || (ext && W->local))
+            RCHECK(tel.commanded_duty == 0.0f, "PID: duty %.3f while a foldback cuts",
+                   (double)tel.commanded_duty);
+        // pb_heater_pid_window_on(): a window with less than the dwell of OFF
+        // time is fully on, one with less than the dwell of ON time is off.
+        int64_t on_us = (int64_t)(tel.commanded_duty * (float)PB_HEATER_PID_WINDOW_US);
+        if (tel.commanded_duty > 0.0f && PB_HEATER_PID_WINDOW_US - on_us < PB_HEATER_PID_MIN_DWELL_US) {
+            W->pid_liveness_checks++;
+            RCHECK(relay() == 1, "PID: relay off at duty %.3f", (double)tel.commanded_duty);
+        }
+        if (on_us < PB_HEATER_PID_MIN_DWELL_US)
+            RCHECK(relay() == 0, "PID: relay on at duty %.3f", (double)tel.commanded_duty);
     }
 
     // Durability: a latch that must persist lands within 2 s of NVS recovery.
@@ -368,7 +412,14 @@ static void act_clear(void)
         RCHECK(r == ESP_ERR_INVALID_STATE, "clear accepted while inhibited");
     } else if (W->nvs_write_bad) {
         RCHECK(r != ESP_OK, "clear reported success although the NVS write failed");
+        RCHECK(pb_heater_is_faulted() == W->faulted, "a failed clear changed the RAM latch");
         W->clears_failed++;
+        if (W->faulted && nvs_u("fault_latch") != 1 && W->expect_persist) {
+            // Known gap 3: a clear that fails part way leaves flash unlatched.
+            // Counted, not failed. The oracle follows the real flash content.
+            W->gap3_events++;
+            W->expect_persist = false;
+        }
     } else {
         RCHECK(r == ESP_OK, "clear failed with working NVS (%d)", r);
         RCHECK(nvs_u("fault_latch") == 0, "clear did not persist");
@@ -498,16 +549,18 @@ static void act_sensor_mode(void)
 static void act_nvs_write_fault(void)
 {
     if (W->nvs_write_bad) {
-        env->nvs_fail_open_rw = env->nvs_fail_set = env->nvs_fail_commit = 0;
+        env->nvs_fail_open_rw = env->nvs_fail_set = 0;
+        env->nvs_fail_set_nth = 0;
         W->nvs_write_bad = false;
         W->nvs_healthy_since_us = env->now_us;
         return;
     }
     if (!chance(0.3)) return;                  // keep NVS mostly healthy
-    switch (rnd_u(3)) {
+    switch (rnd_u(4)) {
     case 0: env->nvs_fail_open_rw = ESP_ERR_NVS_NOT_INITIALIZED; break;
     case 1: env->nvs_fail_set = ESP_FAIL; break;
-    default: env->nvs_fail_commit = ESP_FAIL; break;
+    case 2: env->nvs_fail_set_nth = 1; break;  // the first set of each sequence fails
+    default: env->nvs_fail_set_nth = 2; break; // a partial write: the second set fails
     }
     W->nvs_write_bad = true;
 }
@@ -691,13 +744,17 @@ static long env_long(const char *name, long def)
     return (s && *s) ? strtol(s, NULL, 0) : def;
 }
 
-static bool run_seed(uint64_t seed, long steps, bool strict_gaps)
+typedef struct {
+    long relay_on, liveness, pid_liveness, fb_cut, local_cut, gaps;
+    long trips[PB_FAULT__COUNT];
+} totals_t;
+
+static bool run_seed(uint64_t seed, long steps, totals_t *tot)
 {
     memset(W, 0, sizeof(*W));
     W->seed = seed;
     W->rng = seed;
     W->steps = steps;
-    W->strict_gaps = strict_gaps;
     env_reset();
     static const int rrefs[] = { 82, 33, 82, 33, 47, 0 };
     env->rref_kohm = rrefs[rnd_u(6)];
@@ -723,19 +780,55 @@ static bool run_seed(uint64_t seed, long steps, bool strict_gaps)
     }
     printf("ok   random seed=%" PRIu64 " rref=%d steps=%ld ticks=%ld faulted=%ld armed=%ld relay_on=%ld "
            "fb_cut=%ld local_cut=%ld reboots=%ld panics=%ld clears=%ld/%ld "
-           "liveness=%ld trips[ptc=%ld ch=%ld chs=%ld ptcs=%ld link=%ld] gap_events=%ld\n",
+           "liveness=%ld pid_liveness=%ld trips[ptc=%ld ch=%ld chs=%ld ptcs=%ld link=%ld] "
+           "gap1=%ld gap3=%ld\n",
            seed, env->rref_kohm, W->steps, W->ticks, W->faulted_ticks, W->armed_ticks,
            W->relay_on_ticks,
            W->fb_cut_ticks, W->local_cut_ticks, W->reboots, W->panics,
-           W->clears_ok, W->clears_failed, W->liveness_checks,
+           W->clears_ok, W->clears_failed, W->liveness_checks, W->pid_liveness_checks,
            W->trips[PB_FAULT_PTC_OVERTEMP], W->trips[PB_FAULT_CHAMBER_OVERTEMP],
            W->trips[PB_FAULT_CHAMBER_SENSOR], W->trips[PB_FAULT_PTC_SENSOR],
-           W->trips[PB_FAULT_LINK_LOST], W->gap_events);
+           W->trips[PB_FAULT_LINK_LOST], W->gap1_events, W->gap3_events);
+    tot->relay_on += W->relay_on_ticks;
+    tot->liveness += W->liveness_checks;
+    tot->pid_liveness += W->pid_liveness_checks;
+    tot->fb_cut += W->fb_cut_ticks;
+    tot->local_cut += W->local_cut_ticks;
+    tot->gaps += W->gap1_events + W->gap3_events;
+    for (int i = 0; i < PB_FAULT__COUNT; ++i) tot->trips[i] += W->trips[i];
     return true;
 }
 
-bool heater_random_test(bool strict_gaps)
+// The default seeds must reach each safety path at least once, so that a
+// change in the generator cannot make the test vacuous without notice.
+static bool check_totals(const totals_t *t)
 {
+    struct { const char *what; long n; } req[] = {
+        { "relay-on ticks", t->relay_on },
+        { "bang-bang liveness checks", t->liveness },
+        { "PID liveness checks", t->pid_liveness },
+        { "element foldback cuts", t->fb_cut },
+        { "local foldback cuts", t->local_cut },
+        { "PTC over-temp trips", t->trips[PB_FAULT_PTC_OVERTEMP] },
+        { "chamber over-temp trips", t->trips[PB_FAULT_CHAMBER_OVERTEMP] },
+        { "chamber sensor trips", t->trips[PB_FAULT_CHAMBER_SENSOR] },
+        { "PTC sensor trips", t->trips[PB_FAULT_PTC_SENSOR] },
+        { "link-lost trips", t->trips[PB_FAULT_LINK_LOST] },
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(req) / sizeof(req[0]); ++i) {
+        if (req[i].n < 1) {
+            fprintf(stderr, "random test coverage too low: 0 %s over all seeds\n", req[i].what);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+bool heater_random_test(long *gap_events)
+{
+    totals_t tot;
+    memset(&tot, 0, sizeof(tot));
     void *p = mmap(NULL, sizeof(world_t), PROT_READ | PROT_WRITE,
                    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) { perror("mmap"); return false; }
@@ -747,13 +840,16 @@ bool heater_random_test(bool strict_gaps)
     if (one && *one) {
         uint64_t seed = strtoull(one, NULL, 0);
         printf("random test: PB_HEATER_SEED=%" PRIu64 " steps=%ld\n", seed, steps);
-        ok = run_seed(seed, steps, strict_gaps);
+        ok = run_seed(seed, steps, &tot);
     } else {
         long n = env_long("PB_HEATER_SEEDS", 8);
         printf("random test: %ld seeds from 0xDB000001, steps=%ld "
                "(override: PB_HEATER_SEED, PB_HEATER_SEEDS, PB_HEATER_STEPS)\n", n, steps);
-        for (long i = 0; i < n; ++i) ok &= run_seed(0xDB000001ull + (uint64_t)i, steps, strict_gaps);
+        for (long i = 0; i < n; ++i) ok &= run_seed(0xDB000001ull + (uint64_t)i, steps, &tot);
+        // Only the full default set must reach every path.
+        if (ok && !getenv("PB_HEATER_SEEDS") && !getenv("PB_HEATER_STEPS")) ok = check_totals(&tot);
     }
+    *gap_events += tot.gaps;
     munmap(p, sizeof(world_t));
     return ok;
 }

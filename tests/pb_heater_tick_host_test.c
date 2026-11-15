@@ -133,7 +133,7 @@ static void t_boot_relay_off(void)
     CHECK(env->gpio_config_calls == 1);
     CHECK(env->gpio_config_mask == (1ULL << PB_GPIO_RELAY));
     CHECK(env->gpio_config_mode == GPIO_MODE_OUTPUT);
-    CHECK(env->writes[PB_GPIO_RELAY] == 1);
+    CHECK(env->writes[PB_GPIO_RELAY] >= 1 && env->high_writes[PB_GPIO_RELAY] == 0);
     CHECK(relay() == 0);
     CHECK(!pb_heater_is_on());
     CHECK(!pb_heater_is_faulted());
@@ -347,9 +347,9 @@ static void t_sensor_fault_idle_then_arm(void)
     for (int i = 0; i < 5; ++i) { tick(); CHECK(!pb_heater_is_faulted()); }   // idle: no hazard
     link_alive();
     CHECK(set_target(50.0f) == ESP_OK);
-    unsigned writes = env->writes[PB_GPIO_RELAY];
+    unsigned high = env->high_writes[PB_GPIO_RELAY];
     expect_trip(PB_FAULT_PTC_SENSOR, true);
-    CHECK(env->writes[PB_GPIO_RELAY] == writes + 1);   // only the trip's off write
+    CHECK(env->high_writes[PB_GPIO_RELAY] == high);   // no relay-on write in that tick
 }
 
 static void t_comms_watchdog(void)
@@ -398,9 +398,9 @@ static void t_comms_idle_stale_link(void)
     CHECK(!pb_heater_is_faulted());          // idle: the watchdog does not apply
     // Arming without a link refresh trips on the first tick, before any heat.
     CHECK(set_target(50.0f) == ESP_OK);
-    unsigned writes = env->writes[PB_GPIO_RELAY];
+    unsigned high = env->high_writes[PB_GPIO_RELAY];
     expect_trip(PB_FAULT_LINK_LOST, true);
-    CHECK(env->writes[PB_GPIO_RELAY] == writes + 1);
+    CHECK(env->high_writes[PB_GPIO_RELAY] == high);
 }
 
 static void t_comms_nvs_clamped(void)
@@ -687,9 +687,9 @@ static void t_clear_fault_sensor_still_open(void)
     // ...but a new heat request trips again before the relay can turn on.
     link_alive();
     CHECK(set_target(60.0f) == ESP_OK);
-    unsigned writes = env->writes[PB_GPIO_RELAY];
+    unsigned high = env->high_writes[PB_GPIO_RELAY];
     expect_trip(PB_FAULT_CHAMBER_SENSOR, true);
-    CHECK(env->writes[PB_GPIO_RELAY] == writes + 1);
+    CHECK(env->high_writes[PB_GPIO_RELAY] == high);
 }
 
 static void t_clear_fault_nvs_fails(void)
@@ -698,18 +698,14 @@ static void t_clear_fault_nvs_fails(void)
     sensors(40.0f, 110.0f);
     expect_trip(PB_FAULT_PTC_OVERTEMP, true);
     sensors(30.0f, 40.0f);
-    env->nvs_fail_commit = ESP_FAIL;
-    CHECK(clear_fault() == ESP_FAIL);
-    CHECK(pb_heater_is_faulted());              // persist-first: stays latched
-    CHECK(nvs_u("fault_latch") == 1);
-    env->nvs_fail_commit = 0;
     env->nvs_fail_open_rw = ESP_ERR_NVS_NOT_INITIALIZED;
     CHECK(clear_fault() == ESP_ERR_NVS_NOT_INITIALIZED);
     CHECK(pb_heater_is_faulted());
     env->nvs_fail_open_rw = 0;
     env->nvs_fail_set = ESP_FAIL;
     CHECK(clear_fault() == ESP_FAIL);
-    CHECK(pb_heater_is_faulted());
+    CHECK(pb_heater_is_faulted());              // persist-first: stays latched
+    CHECK(nvs_u("fault_latch") == 1);
     env->nvs_fail_set = 0;
     CHECK(clear_fault() == ESP_OK);
     CHECK(!pb_heater_is_faulted());
@@ -776,16 +772,32 @@ static void t_deferred_persist(void)
     CHECK(env->nvs_commits == commits);         // nothing pending any more
 }
 
+static void t_deferred_persist_partial(void)
+{
+    // The latch key lands, the code key fails: flash is latched (fail-safe)
+    // and the retry writes the code later.
+    start_heating(60.0f);
+    env->nvs_fail_set_nth = 2;
+    sensors(40.0f, 107.0f);
+    expect_trip(PB_FAULT_PTC_OVERTEMP, false);
+    CHECK(nvs_u("fault_latch") == 1);
+    CHECK(nvs_u("fault_code") == -1);
+    env->nvs_fail_set_nth = 0;
+    advance_ms(2500);
+    tick();
+    CHECK(nvs_u("fault_code") == PB_FAULT_PTC_OVERTEMP);
+}
+
 static void t_deferred_persist_throttle_and_lock(void)
 {
     advance_ms(5000);                           // the first retry waits for 2 s uptime
     start_heating(60.0f);
-    env->nvs_fail_commit = ESP_FAIL;
+    env->nvs_fail_set = ESP_FAIL;
     sensors(86.0f, 60.0f);
     expect_trip(PB_FAULT_CHAMBER_OVERTEMP, false);
     advance_ms(100);
     tick();                                     // first retry (no retry before)
-    env->nvs_fail_commit = 0;
+    env->nvs_fail_set = 0;
     unsigned commits = env->nvs_commits;
     advance_ms(1000);
     tick();                                     // < 2 s since the retry: throttled
@@ -942,7 +954,7 @@ static void t_before_init(void)
     CHECK(nvs_u("fault_latch") == 1);
     CHECK(pb_heater_clear_fault() == ESP_OK);
     CHECK(nvs_u("fault_latch") == 0);
-    env->nvs_fail_commit = ESP_FAIL;
+    env->nvs_fail_set = ESP_FAIL;
     pb_heater_emergency_off("early, NVS down");
     CHECK(pb_heater_clear_fault() == ESP_FAIL);
     CHECK(pb_heater_is_faulted());
@@ -951,7 +963,7 @@ static void t_before_init(void)
     pb_heater_tick();                           // no mutex: the retry waits
     CHECK(nvs_u("fault_latch") == 0);
     env_check_quiescent();
-    env->nvs_fail_commit = 0;
+    env->nvs_fail_set = 0;
     boot();
 }
 
@@ -970,9 +982,10 @@ static void t_strings(void)
 }
 
 // --- known gaps -------------------------------------------------------------------
-// These tests show behavior that differs from the documented intent. They do not
-// fail the run unless PB_HEATER_TEST_KNOWN_GAPS=1, so that CI stays green until
-// the firmware owners decide. Do not "fix" them by weakening a check.
+// These tests show behavior that differs from the documented intent. The run
+// prints "KNOWN GAP (expected)" for each one and stays green, so that CI stays
+// green until the firmware owners decide. PB_HEATER_TEST_KNOWN_GAPS=1 counts
+// them as failures at the end of the run. Do not "fix" them by weakening a check.
 
 // Gap 1: a hazard trip while a RAM-only latch is held (panic-off, inhibit, or
 // the boot NVS_UNREADABLE latch) is not written to NVS, because do_latch()
@@ -1019,6 +1032,25 @@ static void t_known_gap_approach_limit_label(void)
     }
     CHECK(shaped);
     CHECKF(labelled, "approach cap was active but the constraint was never approach_limit");
+}
+
+// Gap 3: a clear that fails part way leaves flash unlatched. persist_fault(false)
+// writes the latch key first. ESP-IDF writes each set through to flash, so if the
+// latch write succeeds and the code write fails, flash says "not latched" while
+// RAM stays latched and the API reports an error. After a reboot the latch is
+// gone. SAFETY.md: a failed persist keeps the heater latched.
+static void t_known_gap_partial_clear_unlatches_flash(void)
+{
+    start_heating(60.0f);
+    sensors(40.0f, 110.0f);
+    expect_trip(PB_FAULT_PTC_OVERTEMP, true);
+    sensors(30.0f, 40.0f);
+    env->nvs_fail_set_nth = 2;                 // the second set of the clear fails
+    CHECK(clear_fault() != ESP_OK);
+    CHECK(pb_heater_is_faulted());
+    CHECKF(nvs_u("fault_latch") == 1,
+           "failed clear left flash unlatched (fault_latch=%d) while RAM is latched",
+           nvs_u("fault_latch"));
 }
 
 int main(int argc, char **argv)
@@ -1083,6 +1115,7 @@ int main(int argc, char **argv)
         RUN(t_inhibit);
         RUN(t_emergency_off);
         RUN(t_deferred_persist);
+        RUN(t_deferred_persist_partial);
         RUN(t_deferred_persist_throttle_and_lock);
         RUN(t_deferred_persist_clear_race);
         RUN(t_deferred_persist_then_clear);
@@ -1098,23 +1131,35 @@ int main(int argc, char **argv)
     // PB_HEATER_TEST_KNOWN_GAPS=1. Each one is described in the test above.
     bool strict_gaps = getenv("PB_HEATER_TEST_KNOWN_GAPS")
                        && strcmp(getenv("PB_HEATER_TEST_KNOWN_GAPS"), "1") == 0;
+    long gaps_seen = 0;
     if (!only_random) {
         static const struct { const char *name; void (*fn)(void); } gaps[] = {
             { "t_known_gap_hazard_during_panic_not_persisted",
               t_known_gap_hazard_during_panic_not_persisted },
             { "t_known_gap_approach_limit_label", t_known_gap_approach_limit_label },
+            { "t_known_gap_partial_clear_unlatches_flash",
+              t_known_gap_partial_clear_unlatches_flash },
         };
         for (size_t i = 0; i < sizeof(gaps) / sizeof(gaps[0]); ++i) {
             env_reset();
-            bool gap_ok = env_run(gaps[i].name, gaps[i].fn);
-            if (!gap_ok && !strict_gaps)
-                printf("KNOWN GAP %s: not counted as a failure "
-                       "(PB_HEATER_TEST_KNOWN_GAPS=1 fails on it)\n", gaps[i].name);
-            if (strict_gaps) ok &= gap_ok;
+            if (env_run_code(gaps[i].fn) != 0) {
+                printf("KNOWN GAP (expected): %s\n", gaps[i].name);
+                gaps_seen++;
+            } else {
+                printf("KNOWN GAP FIXED - remove the marker: %s\n", gaps[i].name);
+            }
         }
     }
 
-    ok &= heater_random_test(strict_gaps);
+    long random_gaps = 0;
+    ok &= heater_random_test(&random_gaps);
+    gaps_seen += random_gaps;
+
+    if (gaps_seen > 0)
+        printf("known gaps seen: %ld (%s)\n", gaps_seen,
+               strict_gaps ? "PB_HEATER_TEST_KNOWN_GAPS=1: counted as failures"
+                           : "expected, not counted as failures");
+    if (strict_gaps && gaps_seen > 0) ok = false;
 
     if (!ok) {
         fprintf(stderr, "pb_heater tick host test: FAILED\n");

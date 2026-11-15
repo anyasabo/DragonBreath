@@ -116,16 +116,18 @@ int64_t esp_timer_get_time(void) { return env->now_us; }
 
 void host_critical_enter(portMUX_TYPE *mux)
 {
-    (void)mux;
-    ENV_REQUIRE(env->crit_depth == 0, "nested critical section");
+    // ESP-IDF allows a task to take the same portMUX again (it counts the depth).
+    ENV_REQUIRE(env->crit_depth == 0 || env->crit_mux == (void *)mux,
+                "nested critical section on a different portMUX");
+    env->crit_mux = mux;
     env->crit_depth++;
 }
 
 void host_critical_exit(portMUX_TYPE *mux)
 {
-    (void)mux;
-    ENV_REQUIRE(env->crit_depth == 1, "critical exit without enter");
-    env->crit_depth--;
+    ENV_REQUIRE(env->crit_depth >= 1 && env->crit_mux == (void *)mux,
+                "critical exit without a matching enter");
+    if (--env->crit_depth == 0) env->crit_mux = NULL;
 }
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void)
@@ -186,6 +188,7 @@ esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level)
     ENV_REQUIRE(level <= 1, "relay level %u", (unsigned)level);
     env->level[pin] = (int)level;
     env->writes[pin]++;
+    if (level) env->high_writes[pin]++;
     return ESP_OK;
 }
 
@@ -275,15 +278,10 @@ static esp_err_t nvs_set(nvs_handle_t h, const char *key, host_nvs_type_t type, 
     ENV_REQUIRE(env->crit_depth == 0, "nvs_set inside a critical section");
     host_nvs_handle_t *hh = handle_get(h);
     ENV_REQUIRE(hh->writable, "nvs_set on a read-only handle");
+    hh->n_sets++;
     if (env->nvs_fail_set) return env->nvs_fail_set;
-    ENV_REQUIRE(hh->n_staged < HOST_NVS_MAX_STAGED, "too many staged NVS writes");
-    host_nvs_entry_t *e = &hh->staged[hh->n_staged++];
-    memset(e, 0, sizeof(*e));
-    ENV_REQUIRE(strlen(key) < HOST_NVS_KEY_LEN, "NVS key too long: %s", key);
-    strcpy(e->key, key);
-    e->type = type;
-    e->value = v;
-    e->present = true;
+    if (env->nvs_fail_set_nth > 0 && hh->n_sets == env->nvs_fail_set_nth) return ESP_FAIL;
+    env_nvs_write(key, type, v);         // write-through, as in ESP-IDF
     return ESP_OK;
 }
 
@@ -326,11 +324,8 @@ esp_err_t nvs_set_i32(nvs_handle_t h, const char *key, int32_t v)
 esp_err_t nvs_commit(nvs_handle_t h)
 {
     ENV_REQUIRE(env->crit_depth == 0, "nvs_commit inside a critical section");
-    host_nvs_handle_t *hh = handle_get(h);
+    (void)handle_get(h);
     if (env->nvs_fail_commit) return env->nvs_fail_commit;
-    for (int i = 0; i < hh->n_staged; ++i)
-        env_nvs_write(hh->staged[i].key, hh->staged[i].type, hh->staged[i].value);
-    hh->n_staged = 0;
     env->nvs_commits++;
     return ESP_OK;
 }
@@ -338,6 +333,5 @@ esp_err_t nvs_commit(nvs_handle_t h)
 void nvs_close(nvs_handle_t h)
 {
     host_nvs_handle_t *hh = handle_get(h);
-    hh->open = false;            // staged writes without a commit are dropped
-    hh->n_staged = 0;
+    hh->open = false;
 }

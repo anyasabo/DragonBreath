@@ -21,7 +21,6 @@
 #define HOST_NVS_MAX_KEYS    32
 #define HOST_NVS_KEY_LEN     16
 #define HOST_NVS_MAX_HANDLES 4
-#define HOST_NVS_MAX_STAGED  8
 #define HOST_ADC_CHANNELS    5
 
 typedef enum { HOST_NVS_U8 = 1, HOST_NVS_U32, HOST_NVS_I32 } host_nvs_type_t;
@@ -36,8 +35,7 @@ typedef struct {
 typedef struct {
     bool open;
     bool writable;
-    int n_staged;
-    host_nvs_entry_t staged[HOST_NVS_MAX_STAGED];
+    int n_sets;                  // nvs_set_* calls on this handle
 } host_nvs_handle_t;
 
 // Which task context the test simulates. Only CTX_CONTROL and CTX_BOOT
@@ -51,6 +49,7 @@ typedef struct {
     // GPIO
     int level[GPIO_NUM_MAX];
     unsigned writes[GPIO_NUM_MAX];
+    unsigned high_writes[GPIO_NUM_MAX];   // writes of level 1
     unsigned gpio_config_calls;
     uint64_t gpio_config_mask;
     int gpio_config_mode;
@@ -58,20 +57,25 @@ typedef struct {
 
     // FreeRTOS
     int crit_depth;
+    void *crit_mux;              // the portMUX that is held (nesting must use the same one)
     bool sem_created;
     int sem_held;
     bool sem_contended;          // a zero-wait take fails (another task holds it)
     void (*after_give_hook)(void);   // one-shot: runs after the next mutex give
 
-    // NVS ("app_nvs" is the only namespace the code under test uses)
+    // NVS ("app_nvs" is the only namespace the code under test uses). Like ESP-IDF
+    // v5.3, each nvs_set_* writes through to flash at once. nvs_commit() writes
+    // nothing more. So a failure part way through a sequence of sets leaves the
+    // earlier sets in flash.
     bool nvs_ns_exists;
     host_nvs_entry_t nvs[HOST_NVS_MAX_KEYS];
     host_nvs_handle_t handles[HOST_NVS_MAX_HANDLES];
     esp_err_t nvs_fail_open_ro;  // 0 = no injected failure
     esp_err_t nvs_fail_open_rw;
     esp_err_t nvs_fail_get;
-    esp_err_t nvs_fail_set;
-    esp_err_t nvs_fail_commit;
+    esp_err_t nvs_fail_set;      // each set fails
+    int nvs_fail_set_nth;        // N > 0: the Nth set on each open handle fails (ESP_FAIL)
+    esp_err_t nvs_fail_commit;   // opt-in: commit returns this, the sets are already in flash
     unsigned nvs_commits;
 
     // Sensor inputs for the pb_ntc API stub (heater tick test only).

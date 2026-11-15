@@ -2,8 +2,8 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-// In-memory NVS, implemented in tests/heater_host_env.c. Each set is staged on
-// the handle and applied by nvs_commit(). nvs_close() drops staged writes.
+// In-memory NVS, implemented in tests/heater_host_env.c. As in ESP-IDF v5.3,
+// each set writes through at once and nvs_commit() writes nothing more.
 #define ESP_ERR_NVS_BASE              0x1100
 #define ESP_ERR_NVS_NOT_INITIALIZED   (ESP_ERR_NVS_BASE + 0x01)
 #define ESP_ERR_NVS_NOT_FOUND         (ESP_ERR_NVS_BASE + 0x02)

@@ -232,6 +232,52 @@ jobs:
             -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
           command: ccache --zero-stats && idf.py build
 
+      # SBOM: esp-idf-sbom reads build/project_description.json. That file has the
+      # container paths, so the create step runs in the ESP-IDF container. The
+      # vulnerability check needs only the SPDX file. It reports and does not fail.
+      - name: Create SBOM (SPDX)
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: v5.3.5
+          target: esp32c3
+          path: '.'
+          command: |
+            set -e
+            pip install --quiet esp-idf-sbom==1.5.0
+            esp-idf-sbom create --rem-unused -o build/dragonbreath.spdx build/project_description.json
+
+      - name: Check SBOM for vulnerabilities (report only)
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          NVDAPIKEY: ${{ secrets.NVDAPIKEY }}
+        run: |
+          # check exits 1 if it finds a CVE. Keep the code for the summary.
+          rc=0
+          pipx run esp-idf-sbom==1.5.0 --no-color --no-progress --no-hint \
+            check --format markdown -o build/sbom-check.md build/dragonbreath.spdx || rc=$?
+          {
+            echo '## SBOM vulnerability check (report only)'
+            echo
+            echo "esp-idf-sbom check exit code: $rc"
+            echo
+            echo '| status | severity | package | version | CVE |'
+            echo '|---|---|---|---|---|'
+            sed 's/  */ /g' build/sbom-check.md | awk -F'|' '$5 ~ /CVE-/ {
+              for (i = 2; i <= 7; i++) gsub(/^ +| +$/, "", $i)
+              printf "| %s | %s | %s | %s | %s |\n", $2, ($7 == "" ? "-" : $7), $3, $4, $5
+            }'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dragonbreath-sbom
+          path: |
+            build/dragonbreath.spdx
+            build/sbom-check.md
+          if-no-files-found: warn
+
       - name: Check API v2 contract and shared dashboard ownership
         run: |
           sh tests/check_api_v2_contract.sh

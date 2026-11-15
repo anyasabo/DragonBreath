@@ -88,7 +88,11 @@ EOF
 
 # 4. provenance manifest (per-artifact SHA-256)
 CORE_REF="${CORE_REF:-$(awk '/^  dc_portal:/{found=1} found && /^    version:/{print $2; exit}' main/idf_component.yml)}"
-export VERSION SOURCE_SHA IDF_VERSION TARGET BOARD BUILT_AT CORE_REF
+# Every dependency in main/idf_component.yml that comes from the dragon-core repo.
+CORE_COMPONENTS="$(awk '/^  [A-Za-z0-9_.-]+:$/{name=$1; sub(/:$/, "", name)}
+    /^    git: .*dragon-core/{print name}' main/idf_component.yml | paste -sd, -)"
+[ -n "$CORE_COMPONENTS" ] || { echo "no dragon-core components in main/idf_component.yml" >&2; exit 1; }
+export VERSION SOURCE_SHA IDF_VERSION TARGET BOARD BUILT_AT CORE_REF CORE_COMPONENTS
 python3 - "$OUT/$APP" "$OUT/$FACTORY" \
     "$BUILD_DIR/bootloader/bootloader.bin" \
     "$BUILD_DIR/partition_table/partition-table.bin" \
@@ -102,7 +106,7 @@ print(json.dumps({
     "source_sha":os.environ["SOURCE_SHA"],
     "idf_version":os.environ["IDF_VERSION"],
     "target":os.environ["TARGET"],"board":os.environ["BOARD"],
-    "shared_core":{"source":"github.com/justinh-rahb/dragon-core","ref":os.environ["CORE_REF"],"license":"MIT","components":["dc_evlog","dc_source","dc_bambu","dc_wifi","dc_moonraker","dc_ui","dc_mqtt","dc_portal"]},
+    "shared_core":{"source":"github.com/justinh-rahb/dragon-core","ref":os.environ["CORE_REF"],"license":"MIT","components":os.environ["CORE_COMPONENTS"].split(",")},
     "built_at_utc":os.environ["BUILT_AT"],
     "note":"managed component versions in dependencies.lock (bundled)",
     "artifacts":arts,

@@ -31,6 +31,12 @@ below into the GitHub Release notes.
   choices write the `ap_mode` NVS key once, before Wi-Fi starts. A stored user
   choice always wins. See README "Setup AP mode".
 
+### Changed
+- The firmware also builds with ESP-IDF v6.1. Release builds continue to use
+  the version in `.idf-version` (v5.3.6). ESP-IDF 6 builds get cJSON from the component registry and
+  use the split `esp_driver_*` components. They need a dragon-core version
+  with ESP-IDF 6 support.
+
 ### Fixed
 - **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or
   chamber over-temp tripped while a panic-off, a permanent inhibit or an

@@ -354,3 +354,26 @@ jobs:
             build-hil-devboard-uart/dragonbreath.bin
             build-debug-devboard-native/dragonbreath.bin
           if-no-files-found: warn
+
+  # A separate job, so an ESP-IDF 6 failure does not stop the v5.3.5 builds
+  # and their artifact upload.
+  build-idf6:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # ESP-IDF 6 moved cJSON to the component registry and uses Mbed TLS 4,
+      # Picolibc and GCC 15. This build keeps the firmware compatible with it.
+      # Release builds still use ESP-IDF v5.3.5.
+      - name: Build release profile (ESP-IDF v6.1)
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32c3
+          path: '.'
+          command: |
+            set -e
+            idf.py -B build-idf6-release \
+              -DSDKCONFIG="$PWD/build-idf6-release/sdkconfig.profile" \
+              -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.release" \
+              build

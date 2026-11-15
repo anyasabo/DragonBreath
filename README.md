@@ -396,7 +396,10 @@ Requires ESP-IDF v5.3.2 or newer. ESP-IDF v5.3.1 has a known asynchronous
 HTTP-request socket ownership defect that can corrupt concurrent responses;
 [Espressif fixed it in `8b559ce`](https://github.com/espressif/esp-idf/commit/8b559ce6145474f01fcbb8763604e6b8769ba84e).
 DragonBreath's CI and release builds read the ESP-IDF version from
-[`.idf-version`](.idf-version). Use the same version for local builds.
+[`.idf-version`](.idf-version). Use the same version for local builds. CI also
+builds the release profile with ESP-IDF v6.1. On ESP-IDF 6, the component
+manifests add `espressif/cjson` from the component registry, because ESP-IDF 6
+removed its built-in `json` component.
 
 ```bash
 git clone https://github.com/plastikman/DragonBreath

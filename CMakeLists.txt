@@ -39,11 +39,13 @@ project(dragonbreath)
 # asynchronous request worker still owns it. DragonBreath's SSE endpoint uses
 # that API, so require Espressif's 8b559ce61454 fix, first released in
 # ESP-IDF 5.3.2.
-idf_build_get_property(DB_IDF_VERSION IDF_VER)
-if(NOT DB_IDF_VERSION MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)")
-    message(FATAL_ERROR "Cannot determine ESP-IDF version from '${DB_IDF_VERSION}'")
+# Use the numeric version from ESP-IDF's version.cmake. IDF_VER is a git
+# description and can have two parts, for example "v6.1".
+if(NOT DEFINED IDF_VERSION_MAJOR OR NOT DEFINED IDF_VERSION_MINOR
+   OR NOT DEFINED IDF_VERSION_PATCH)
+    message(FATAL_ERROR "Cannot determine the ESP-IDF version")
 endif()
-set(DB_IDF_SEMVER "${CMAKE_MATCH_1}")
+set(DB_IDF_SEMVER "${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}.${IDF_VERSION_PATCH}")
 if(DB_IDF_SEMVER VERSION_LESS "5.3.2")
     message(FATAL_ERROR
         "DragonBreath requires ESP-IDF v5.3.2 or newer: older releases can "

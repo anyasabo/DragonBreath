@@ -7,8 +7,9 @@ does two checks:
 
 1. Hot-path calls. It lists each function that a root (default: control_task)
    can reach and that calls logging, printf, soft-double math, a blocking
-   FreeRTOS/NVS/flash call or malloc. In CI mode (--ci), it fails if an entry is
-   not in the allowlist.
+   FreeRTOS/NVS/flash call or malloc, or that calls through a function pointer.
+   In CI mode (--ci), it fails if an entry is not in the allowlist, or if it
+   has more call sites than the allowlist count.
 2. Worst-case stack. If the build used -fstack-usage (cmake -DDB_STACK_USAGE=ON),
    it adds the frame sizes along the deepest path from each task entry.
    Recursion, indirect calls and functions with no .su data make the result a
@@ -17,7 +18,9 @@ does two checks:
 Limits of a static graph:
 - It cannot see how often a call runs. A call that runs once each 2 s and a
   call that runs each tick look the same.
-- It does not follow indirect calls (function pointers, callbacks).
+- It does not follow indirect calls (function pointers, callbacks). It lists
+  each reached function with an indirect call site as callee "(indirect)",
+  so a new one needs a review too.
 - It cannot see into ROM code. A call to a ROM function is a leaf.
 
 Usage:
@@ -38,7 +41,8 @@ import sys
 # Categories of calls that must not be on the control path. The check stops at
 # these functions: it does not follow the calls inside them.
 CATEGORIES = [
-    ("log", re.compile(r"^(esp_log_write\w*|esp_log_writev|esp_rom_printf|ets_printf)$")),
+    # esp_log and esp_log_va: ESP_LOGx of ESP-IDF v6 (log v2).
+    ("log", re.compile(r"^(esp_log_write\w*|esp_log_writev|esp_log|esp_log_va|esp_rom_printf|ets_printf)$")),
     ("printf", re.compile(
         r"^(v?[sf]?n?printf|v?asn?printf|puts|putchar|fputs|fwrite|"
         r"_v?[sf]?n?printf_r|_svfn?printf_r|_vfn?printf_r|_svfiprintf_r|_vfiprintf_r|"
@@ -118,9 +122,12 @@ class Graph:
                 if "+0x" in arg.split("<", 1)[1] or target == cur:
                     continue
                 g.calls[cur][target] += 1
-            elif op == "jalr":
+            elif op == "jalr" or (op == "jr" and not re.match(r"^(0\()?ra\)?$", arg)):
+                # jalr REG: a call through a function pointer. jr REG (not ra):
+                # a tail call through a function pointer. ESP-IDF builds with
+                # -fno-jump-tables, so jr REG is not a switch table. objdump
+                # writes "jr ra" as "ret".
                 g.indirect[cur] += 1
-            # A plain "jr REG" is a return or a jump table. Ignore it.
         return g
 
     def known(self, name):
@@ -161,10 +168,17 @@ def path_to(parent, f):
     return list(reversed(out))
 
 
+INDIRECT = "(indirect)"
+
+
 def hot_path_entries(graph, roots):
-    """Returns a list of (caller, callee, category, count, path)."""
+    """Returns a list of (caller, callee, category, count, path). An indirect
+    call site is an entry with the callee INDIRECT: the check cannot follow it."""
     parent = reach(graph, roots)
     entries = []
+    for f in parent:
+        if graph.indirect.get(f):
+            entries.append((f, INDIRECT, "indirect", graph.indirect[f], path_to(parent, f)))
     for caller in parent:
         for callee, n in graph.calls.get(caller, {}).items():
             cat = categorize(callee)
@@ -175,7 +189,9 @@ def hot_path_entries(graph, roots):
 
 
 def read_allowlist(path):
-    allowed = set()
+    """Returns {(caller, callee): count}. Each line: CALLER CALLEE COUNT. COUNT
+    is the number of call sites that the review accepted."""
+    allowed = {}
     if not path or not os.path.exists(path):
         return allowed
     with open(path, encoding="utf-8") as fh:
@@ -184,9 +200,9 @@ def read_allowlist(path):
             if not line:
                 continue
             parts = line.split()
-            if len(parts) != 2:
-                sys.exit("elf_check: bad allowlist line: %r" % line)
-            allowed.add((parts[0], parts[1]))
+            if len(parts) != 3 or not parts[2].isdigit():
+                sys.exit("elf_check: bad allowlist line (CALLER CALLEE COUNT): %r" % line)
+            allowed[(parts[0], parts[1])] = int(parts[2])
     return allowed
 
 
@@ -300,29 +316,33 @@ def main(argv=None):
     for caller, callee, cat, n, path in entries:
         mark = ""
         if args.allowlist:
-            if (caller, callee) in allowed:
-                mark = "  [allowed]"
-            else:
+            key = (caller, callee)
+            if key not in allowed:
                 mark = "  [NEW]"
-                new.append((caller, callee))
+                new.append((caller, callee, n, 0))
+            elif n > allowed[key]:
+                mark = "  [MORE: allowed %d]" % allowed[key]
+                new.append((caller, callee, n, allowed[key]))
+            else:
+                mark = "  [allowed]"
         print("%-9s %-40s -> %-24s x%-3d%s" % (cat, caller, callee, n, mark))
         if args.paths:
             print("          via " + " > ".join(path))
-    indirect = sorted((f, graph.indirect[f]) for f in reached if graph.indirect.get(f))
-    if indirect:
-        print("# Reached functions with indirect calls (not followed): %d" % len(indirect))
-        for f, n in indirect:
-            print("indirect  %-40s x%d" % (f, n))
-    stale = sorted(allowed - {(e[0], e[1]) for e in entries})
-    for caller, callee in stale:
-        print("# allowlist entry not found any more (remove it): %s %s" % (caller, callee))
+    found = {(e[0], e[1]): e[3] for e in entries}
+    for (caller, callee), n in sorted(allowed.items()):
+        if (caller, callee) not in found:
+            print("# allowlist entry not found any more (remove it): %s %s" % (caller, callee))
+        elif found[(caller, callee)] < n:
+            print("# allowlist count can go down: %s %s %d -> %d" % (caller, callee, n, found[(caller, callee)]))
 
     if args.write_allowlist:
         with open(args.write_allowlist, "w", encoding="utf-8") as fh:
-            fh.write("# Hot-path calls that the review accepted. Format: CALLER CALLEE.\n")
-            fh.write("# tools/elf_check.py --ci fails on a call that is not in this file.\n")
-            for caller, callee, cat, _n, _p in entries:
-                fh.write("%s %s  # %s\n" % (caller, callee, cat))
+            fh.write("# Hot-path calls that the review accepted. Format: CALLER CALLEE COUNT.\n")
+            fh.write("# tools/elf_check.py --ci fails on a call that is not in this file, and\n")
+            fh.write("# on more call sites than COUNT. CALLEE (indirect) is a call through a\n")
+            fh.write("# function pointer: the check cannot see its target.\n")
+            for caller, callee, cat, n, _p in entries:
+                fh.write("%s %s %d  # %s\n" % (caller, callee, n, cat))
 
     if args.stack:
         bdir = args.build_dir or os.path.dirname(os.path.abspath(args.elf))
@@ -353,9 +373,10 @@ def main(argv=None):
                     print("          via " + " > ".join(path))
 
     if args.ci and new:
-        print("\nelf_check: %d hot-path call(s) not in %s:" % (len(new), args.allowlist), file=sys.stderr)
-        for caller, callee in new:
-            print("  %s %s" % (caller, callee), file=sys.stderr)
+        print("\nelf_check: %d hot-path call(s) not in %s, or more call sites:" % (len(new), args.allowlist),
+              file=sys.stderr)
+        for caller, callee, n, was in new:
+            print("  %s %s %d (allowed %d)" % (caller, callee, n, was), file=sys.stderr)
         print("Remove the call from the control path, or add it to the allowlist with a reason.", file=sys.stderr)
         return 1
     return 0

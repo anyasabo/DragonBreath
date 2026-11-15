@@ -1,111 +1,127 @@
-# Hot-path calls that tools/elf_check.py accepts. Format: CALLER CALLEE.
-# "--ci" fails on a call that the control task can reach and that is not here.
+# Hot-path calls that tools/elf_check.py accepts. Format: CALLER CALLEE COUNT.
+# COUNT is the number of call sites. "--ci" fails on a call that the control
+# task can reach and that is not here, and on more call sites than COUNT.
+# CALLEE "(indirect)" is a call through a function pointer: the check cannot
+# see its target, so each new indirect site needs a review.
 # Generated from the release ELF (ESP-IDF v5.3.6) with --write-allowlist.
 #
-# Before you add a line, read the call. Accept it only if one of these is true:
+# Before you add a line or raise a count, read the call. Accept it only if one
+# of these is true:
 # - it runs only on a state change or on a fault (a log line, an NVS write),
 # - it is a short mutex section (category "lock"),
 # - it is in a source client that runs in the control task by design.
 # Known debt on upstream main:
 # - control_task formats and logs the status line each 2 s (log, printf, double).
 # - db_klipper_mqtt_tick publishes MQTT from the control task (esp_mqtt_write).
+#   On an error, esp_mqtt_abort_connection calls esp_transport_close (indirect:
+#   the TLS close can write to the network).
 # - pb_policy_get_snapshot uses snprintf to copy strings.
-__assert_func spi_flash_cache_enabled  # blocking
-control_task ulTaskGenericNotifyTake  # blocking
-esp_event_loop_run xQueueReceive  # blocking
-esp_mqtt_write esp_transport_write  # blocking
-persist_fault nvs_close  # blocking
-persist_fault nvs_commit  # blocking
-persist_fault nvs_open  # blocking
-persist_fault nvs_set_u8  # blocking
-zones_load nvs_close  # blocking
-zones_load nvs_get_blob  # blocking
-zones_load nvs_get_u8  # blocking
-zones_load nvs_open  # blocking
-control_task __extendsfdf2  # double
-db_klipper_mqtt_tick __extendsfdf2  # double
-pb_heater_set_target_c __extendsfdf2  # double
-publish_state __extendsfdf2  # double
-publish_telemetry __extendsfdf2  # double
-_lock_try_acquire lock_acquire_generic  # lock
-db_klipper_mqtt_tick xQueueGenericSend  # lock
-db_klipper_mqtt_tick xQueueSemaphoreTake  # lock
-dc_bambu_get_status xQueueGenericSend  # lock
-dc_bambu_get_status xQueueSemaphoreTake  # lock
-dc_evlog_add xQueueGenericSend  # lock
-dc_evlog_add xQueueSemaphoreTake  # lock
-dc_moonraker_get_status xQueueGenericSend  # lock
-dc_moonraker_get_status xQueueSemaphoreTake  # lock
-dc_prusa_get_status xQueueGenericSend  # lock
-dc_prusa_get_status xQueueSemaphoreTake  # lock
-do_latch xQueueGenericSend  # lock
-do_latch xQueueSemaphoreTake  # lock
-esp_event_loop_run xQueueGiveMutexRecursive  # lock
-esp_event_loop_run xQueueTakeMutexRecursive  # lock
-esp_event_post_to xQueueGenericSend  # lock
-esp_event_post_to xQueueGiveMutexRecursive  # lock
-esp_event_post_to xQueueTakeMutexRecursive  # lock
-esp_mqtt_abort_connection xQueueGiveMutexRecursive  # lock
-esp_mqtt_abort_connection xQueueTakeMutexRecursive  # lock
-esp_mqtt_client_publish xQueueGiveMutexRecursive  # lock
-esp_mqtt_client_publish xQueueTakeMutexRecursive  # lock
-lock_release_generic xQueueGenericSend  # lock
-lock_release_generic xQueueGiveMutexRecursive  # lock
-pb_ha_tick xQueueGenericSend  # lock
-pb_ha_tick xQueueSemaphoreTake  # lock
-pb_heater_tick xQueueGenericSend  # lock
-pb_heater_tick xQueueSemaphoreTake  # lock
-pb_policy_get_params.part.0 xQueueGenericSend  # lock
-pb_policy_get_params.part.0 xQueueSemaphoreTake  # lock
-pb_policy_get_snapshot xQueueGenericSend  # lock
-pb_policy_get_snapshot xQueueSemaphoreTake  # lock
-pb_policy_heartbeat xQueueGenericSend  # lock
-pb_policy_heartbeat xQueueSemaphoreTake  # lock
-pb_policy_set_env xQueueGenericSend  # lock
-pb_policy_set_env xQueueSemaphoreTake  # lock
-pb_policy_set_klipper_helper xQueueGenericSend  # lock
-pb_policy_set_klipper_helper xQueueSemaphoreTake  # lock
-pb_policy_set_mode_off xQueueGenericSend  # lock
-pb_policy_set_mode_off xQueueSemaphoreTake  # lock
-pb_policy_tick xQueueGenericSend  # lock
-pb_policy_tick xQueueSemaphoreTake  # lock
-publish_telemetry xQueueGenericSend  # lock
-publish_telemetry xQueueSemaphoreTake  # lock
-set_power_on xQueueGenericSend  # lock
-set_power_on xQueueSemaphoreTake  # lock
-stop_heat xQueueGenericSend  # lock
-stop_heat xQueueSemaphoreTake  # lock
-adc_cali_raw_to_voltage esp_log_write  # log
-adc_lock_release esp_log_write  # log
-adc_oneshot_read esp_log_write  # log
-add_entry esp_rom_printf  # log
-control_task esp_log_write  # log
-db_klipper_mqtt_tick esp_log_write  # log
-do_latch esp_log_write  # log
-esp_mqtt_client_publish esp_log_write  # log
-esp_mqtt_write esp_log_write  # log
-esp_task_wdt_add esp_log_write  # log
-esp_task_wdt_reset esp_log_write  # log
-esp_task_wdt_reset esp_rom_printf  # log
-gpio_set_level esp_log_write  # log
-mqtt_client_enqueue_publish esp_log_write  # log
-outbox_enqueue esp_log_write  # log
-pb_heater_emergency_off esp_log_write  # log
-pb_heater_inhibit esp_log_write  # log
-pb_heater_set_target_c esp_log_write  # log
-pb_heater_tick esp_log_write  # log
-pb_policy_tick esp_log_write  # log
-persist_fault esp_log_write  # log
-stop_heat esp_log_write  # log
-add_entry calloc  # malloc
-cfree heap_caps_free  # malloc
-esp_event_post_to calloc  # malloc
-outbox_enqueue calloc  # malloc
-outbox_enqueue heap_caps_malloc  # malloc
-control_task snprintf  # printf
-db_klipper_mqtt_tick snprintf  # printf
-dc_evlog_add vsnprintf  # printf
-pb_policy_get_snapshot snprintf  # printf
-publish_state snprintf  # printf
-publish_telemetry snprintf  # printf
-set_power_on snprintf  # printf
+# Reviewed indirect sites:
+# - wake_control_task: the control-task wake callback (xTaskNotifyGive).
+# - adc_cali_raw_to_voltage: the ADC calibration scheme function.
+# - esp_timer_get_time: the esp_timer clock source function.
+# - esp_event_loop_run: event handlers of the MQTT client (Klipper-over-MQTT only).
+__assert_func spi_flash_cache_enabled 1  # blocking
+control_task ulTaskGenericNotifyTake 1  # blocking
+esp_event_loop_run xQueueReceive 1  # blocking
+esp_mqtt_write esp_transport_write 1  # blocking
+persist_fault nvs_close 1  # blocking
+persist_fault nvs_commit 1  # blocking
+persist_fault nvs_open 1  # blocking
+persist_fault nvs_set_u8 2  # blocking
+zones_load nvs_close 1  # blocking
+zones_load nvs_get_blob 1  # blocking
+zones_load nvs_get_u8 1  # blocking
+zones_load nvs_open 1  # blocking
+control_task __extendsfdf2 20  # double
+db_klipper_mqtt_tick __extendsfdf2 1  # double
+pb_heater_set_target_c __extendsfdf2 2  # double
+publish_state __extendsfdf2 3  # double
+publish_telemetry __extendsfdf2 4  # double
+adc_cali_raw_to_voltage (indirect) 1  # indirect
+esp_event_loop_run (indirect) 3  # indirect
+esp_timer_get_time (indirect) 1  # indirect
+esp_transport_close (indirect) 1  # indirect
+wake_control_task (indirect) 1  # indirect
+_lock_try_acquire lock_acquire_generic 1  # lock
+db_klipper_mqtt_tick xQueueGenericSend 4  # lock
+db_klipper_mqtt_tick xQueueSemaphoreTake 4  # lock
+dc_bambu_get_status xQueueGenericSend 1  # lock
+dc_bambu_get_status xQueueSemaphoreTake 1  # lock
+dc_evlog_add xQueueGenericSend 1  # lock
+dc_evlog_add xQueueSemaphoreTake 1  # lock
+dc_moonraker_get_status xQueueGenericSend 1  # lock
+dc_moonraker_get_status xQueueSemaphoreTake 1  # lock
+dc_prusa_get_status xQueueGenericSend 1  # lock
+dc_prusa_get_status xQueueSemaphoreTake 1  # lock
+do_latch xQueueGenericSend 1  # lock
+do_latch xQueueSemaphoreTake 1  # lock
+esp_event_loop_run xQueueGiveMutexRecursive 2  # lock
+esp_event_loop_run xQueueTakeMutexRecursive 1  # lock
+esp_event_post_to xQueueGenericSend 1  # lock
+esp_event_post_to xQueueGiveMutexRecursive 2  # lock
+esp_event_post_to xQueueTakeMutexRecursive 1  # lock
+esp_mqtt_abort_connection xQueueGiveMutexRecursive 1  # lock
+esp_mqtt_abort_connection xQueueTakeMutexRecursive 1  # lock
+esp_mqtt_client_publish xQueueGiveMutexRecursive 3  # lock
+esp_mqtt_client_publish xQueueTakeMutexRecursive 1  # lock
+lock_release_generic xQueueGenericSend 1  # lock
+lock_release_generic xQueueGiveMutexRecursive 1  # lock
+pb_ha_tick xQueueGenericSend 3  # lock
+pb_ha_tick xQueueSemaphoreTake 3  # lock
+pb_heater_tick xQueueGenericSend 1  # lock
+pb_heater_tick xQueueSemaphoreTake 1  # lock
+pb_policy_get_params.part.0 xQueueGenericSend 1  # lock
+pb_policy_get_params.part.0 xQueueSemaphoreTake 1  # lock
+pb_policy_get_snapshot xQueueGenericSend 1  # lock
+pb_policy_get_snapshot xQueueSemaphoreTake 1  # lock
+pb_policy_heartbeat xQueueGenericSend 2  # lock
+pb_policy_heartbeat xQueueSemaphoreTake 1  # lock
+pb_policy_set_env xQueueGenericSend 1  # lock
+pb_policy_set_env xQueueSemaphoreTake 1  # lock
+pb_policy_set_klipper_helper xQueueGenericSend 1  # lock
+pb_policy_set_klipper_helper xQueueSemaphoreTake 1  # lock
+pb_policy_set_mode_off xQueueGenericSend 1  # lock
+pb_policy_set_mode_off xQueueSemaphoreTake 1  # lock
+pb_policy_tick xQueueGenericSend 1  # lock
+pb_policy_tick xQueueSemaphoreTake 1  # lock
+publish_telemetry xQueueGenericSend 1  # lock
+publish_telemetry xQueueSemaphoreTake 1  # lock
+set_power_on xQueueGenericSend 3  # lock
+set_power_on xQueueSemaphoreTake 1  # lock
+stop_heat xQueueGenericSend 1  # lock
+stop_heat xQueueSemaphoreTake 1  # lock
+adc_cali_raw_to_voltage esp_log_write 2  # log
+adc_lock_release esp_log_write 1  # log
+adc_oneshot_read esp_log_write 1  # log
+add_entry esp_rom_printf 2  # log
+control_task esp_log_write 4  # log
+db_klipper_mqtt_tick esp_log_write 2  # log
+do_latch esp_log_write 1  # log
+esp_mqtt_client_publish esp_log_write 2  # log
+esp_mqtt_write esp_log_write 2  # log
+esp_task_wdt_add esp_log_write 1  # log
+esp_task_wdt_reset esp_log_write 1  # log
+esp_task_wdt_reset esp_rom_printf 1  # log
+gpio_set_level esp_log_write 1  # log
+mqtt_client_enqueue_publish esp_log_write 1  # log
+outbox_enqueue esp_log_write 2  # log
+pb_heater_emergency_off esp_log_write 1  # log
+pb_heater_inhibit esp_log_write 1  # log
+pb_heater_set_target_c esp_log_write 3  # log
+pb_heater_tick esp_log_write 3  # log
+pb_policy_tick esp_log_write 1  # log
+persist_fault esp_log_write 1  # log
+stop_heat esp_log_write 1  # log
+add_entry calloc 1  # malloc
+cfree heap_caps_free 1  # malloc
+esp_event_post_to calloc 1  # malloc
+outbox_enqueue calloc 1  # malloc
+outbox_enqueue heap_caps_malloc 1  # malloc
+control_task snprintf 4  # printf
+db_klipper_mqtt_tick snprintf 1  # printf
+dc_evlog_add vsnprintf 1  # printf
+pb_policy_get_snapshot snprintf 3  # printf
+publish_state snprintf 4  # printf
+publish_telemetry snprintf 6  # printf
+set_power_on snprintf 2  # printf

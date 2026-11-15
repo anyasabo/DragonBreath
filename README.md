@@ -346,8 +346,10 @@ python3 tools/ram_treemap.py -o ram.svg build-stack/dragonbreath.map
 ```
 
 `elf_check.py` lists each call that the control task can reach and that logs,
-formats with printf, uses soft `double` math, can block, or allocates. With
-`--ci`, it fails on a call that is not in `tools/elf_check_allowlist.txt`.
+formats with printf, uses soft `double` math, can block, or allocates. It also
+lists each call through a function pointer, because it cannot follow one. With
+`--ci`, it fails on a call that is not in `tools/elf_check_allowlist.txt`, or on
+more call sites than the allowlist count.
 `--stack` adds the worst-case stack of each task from the `-fstack-usage` data.
 Recursion, indirect calls and code without `.su` data (ROM, prebuilt
 libraries) make a stack value a lower bound. `ram_treemap.py` shows the static

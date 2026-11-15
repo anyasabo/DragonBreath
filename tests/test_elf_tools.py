@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: MIT
 """Unit tests for tools/elf_check.py and tools/ram_treemap.py (no toolchain needed)."""
+import contextlib
+import io
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
@@ -19,12 +22,14 @@ DIS = """
 42000100:\tjal\t42000200 <helper>
 42000104:\tjal\t42000300 <__extendsfdf2>
 42000108:\tjr\t-1056(t1) # 42000400 <esp_log_write>
+4200010c:\tjal\t42000800 <esp_log>
 
 42000200 <helper>:
 42000200:\tjal\t42000100 <tick>
 42000204:\tjal\t42000500 <snprintf>
 42000208:\tjal\t42000500 <snprintf>
-4200020c:\tret
+4200020c:\tjr\ta5
+42000210:\tret
 
 42000300 <__extendsfdf2>:
 42000300:\tjal\t42000600 <malloc>
@@ -46,6 +51,7 @@ class ElfCheckTest(unittest.TestCase):
         self.assertEqual(self.g.indirect["control_task"], 1)
         self.assertEqual(self.g.calls["tick"]["esp_log_write"], 1)   # tail call through jr
         self.assertEqual(self.g.calls["helper"]["snprintf"], 2)
+        self.assertEqual(self.g.indirect["helper"], 1)             # jr a5: indirect tail call
 
     def test_entries_stop_at_categorized_functions(self):
         entries, reached = elf_check.hot_path_entries(self.g, ["control_task"])
@@ -54,7 +60,10 @@ class ElfCheckTest(unittest.TestCase):
             ("control_task", "ulTaskGenericNotifyTake"): "blocking",
             ("tick", "__extendsfdf2"): "double",
             ("tick", "esp_log_write"): "log",
+            ("tick", "esp_log"): "log",
             ("helper", "snprintf"): "printf",
+            ("control_task", elf_check.INDIRECT): "indirect",
+            ("helper", elf_check.INDIRECT): "indirect",
         })
         self.assertNotIn("unrelated", reached)
         self.assertNotIn("malloc", reached)
@@ -86,6 +95,46 @@ MAP = """Linker script and memory map
 .flash.text     0x42000000     0x1000
  .text.foo      0x42000000      0x100 esp-idf/x/libx.a(x.c.obj)
 """
+
+
+class AllowlistCiTest(unittest.TestCase):
+    FULL = ("control_task ulTaskGenericNotifyTake 1\ncontrol_task (indirect) 1\n"
+            "tick __extendsfdf2 1\ntick esp_log_write 1\ntick esp_log 1\n"
+            "helper snprintf 2\nhelper (indirect) 1\n")
+
+    def run_ci(self, allow_text):
+        with tempfile.TemporaryDirectory() as d:
+            dis = os.path.join(d, "dis.txt")
+            with open(dis, "w") as fh:
+                fh.write("\n".join(DIS))
+            fake = os.path.join(d, "objdump")
+            with open(fake, "w") as fh:
+                fh.write("#!/bin/sh\ncat %s\n" % dis)
+            os.chmod(fake, 0o755)
+            allow = os.path.join(d, "allow.txt")
+            with open(allow, "w") as fh:
+                fh.write(allow_text)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = elf_check.main(["--objdump", fake, "--ci", "--allowlist", allow, "x.elf"])
+            return rc, err.getvalue()
+
+    def test_all_allowed(self):
+        self.assertEqual(self.run_ci(self.FULL)[0], 0)
+
+    def test_more_call_sites_fail(self):
+        rc, err = self.run_ci(self.FULL.replace("helper snprintf 2", "helper snprintf 1"))
+        self.assertEqual(rc, 1)
+        self.assertIn("helper snprintf 2 (allowed 1)", err)
+
+    def test_new_indirect_site_fails(self):
+        rc, err = self.run_ci(self.FULL.replace("helper (indirect) 1\n", ""))
+        self.assertEqual(rc, 1)
+        self.assertIn("helper (indirect)", err)
+
+    def test_old_format_is_refused(self):
+        with self.assertRaises(SystemExit):
+            self.run_ci("tick esp_log_write\n")
 
 
 class RamTreemapTest(unittest.TestCase):

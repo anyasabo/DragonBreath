@@ -275,7 +275,44 @@ token in NVS (`app_nvs` / `ctl_token`) and the header must match it exactly. The
 token is **never embedded in the served pages**: when one is configured the
 dashboard prompts for it and caches it in the browser (localStorage), so it is
 real per-client auth rather than a value baked into public HTML. With no token
-configured, pages use a fixed `web` sentinel (pure CSRF hardening).
+configured, pages use a fixed `web` sentinel (pure CSRF hardening). See [Security](#security)
+for the hardened build options.
+
+## Security
+
+The default build trusts the LAN. The `X-DragonBreath-Auth` header stops CSRF from a
+web page. It does not stop a host on your LAN. The API is plain HTTP, so a host
+that can see the traffic can read a token. Use these steps to make the device harder
+to attack:
+
+1. **Set a control token** (Settings → Control token, or `POST /api/v2/token`). Give
+   the same token to Klipper, the PrusaLink helper and each browser. The device
+   compares the token in constant time.
+2. **Change the setup AP password.** The default `987654321` is public. In the
+   default AP mode ("always"), the setup AP stays on next to your Wi-Fi.
+3. **Build options** (`idf.py menuconfig` → *DragonBreath HTTP API security*). All
+   are off by default:
+
+| Option | What it does |
+|---|---|
+| `CONFIG_DB_REQUIRE_CONTROL_TOKEN` | With no token set, the device refuses LAN control, the settings and OTA (HTTP 403 `token_required`). The device accepts requests without a token only while its Wi-Fi station is not associated: then only clients of the setup AP can reach it. A stored token cannot be cleared. |
+| `CONFIG_DB_AUTH_LOCKOUT` | After 10 wrong tokens in 60 s, every auth check fails for 60 s (HTTP 429 `auth_locked`). The limits are build options. The lockout also stops the correct token, so a remote heat lease can expire and the heater turns off. The front-panel buttons and the safety loop are not affected. |
+
+**How to set the first token on a build that requires one:**
+
+- *New device, or after a front-panel reset:* connect to the `DragonBreath_XXXX` AP.
+  In the setup form, type a token in **Security → Control token** before you save
+  the Wi-Fi settings. Or send
+  `curl -X POST http://192.168.4.1/api/v2/token -H 'X-DragonBreath-Auth: setup' -d '{"token":"YOUR-TOKEN"}'`.
+- *Device that is already on your Wi-Fi:* set the token **before** you install the
+  hardened build. The token is in NVS, so an update keeps it.
+- *Device on your Wi-Fi with no token:* hold **Power + Auto** for 5 s. The device
+  erases its settings and starts the setup AP. Then do the first step.
+
+**What these steps do not stop:** these steps do not stop a host that can read your
+LAN traffic (no TLS). They do not stop a person at the front panel. While the station
+is not associated, they do not stop a person with the setup AP password. OTA images are not signed. The device checks only the
+image format and the project name.
 
 ## Show the dashboard in Fluidd / Mainsail
 The dashboard embeds directly in the Fluidd/Mainsail printer view as an **iframe

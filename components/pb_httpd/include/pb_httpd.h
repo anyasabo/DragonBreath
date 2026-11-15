@@ -31,9 +31,15 @@
 esp_err_t pb_httpd_register(httpd_handle_t server);
 
 // True if the request carries a valid PB_AUTH_HEADER. If a control token is
-// configured (NVS app_nvs/"ctl_token"), the header must equal it; otherwise any
-// non-empty value passes (presence-only CSRF gate).
+// configured (NVS app_nvs/"ctl_token"), the header must equal it (constant-time
+// compare); otherwise any non-empty value passes (presence-only CSRF gate).
+// CONFIG_DB_REQUIRE_CONTROL_TOKEN: with no token, it passes only while the Wi-Fi
+// station is not associated (setup AP clients). CONFIG_DB_AUTH_LOCKOUT: after
+// repeated wrong tokens, it fails for a short time. See pb_auth.h.
 bool pb_httpd_auth_ok(httpd_req_t *req);
+
+// Store the control token in NVS (NULL or "" erases it). At most 64 characters.
+esp_err_t pb_httpd_set_ctl_token(const char *token);
 
 // Copy the configured control token into out ("" if none). The same-origin
 // dashboard embeds this so its own fetch()es carry the correct header value.

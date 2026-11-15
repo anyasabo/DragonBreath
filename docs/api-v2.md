@@ -7,6 +7,31 @@ back to those routes.
 All bodies are JSON. Read-only routes are open on the trusted LAN. Mutating
 routes require `X-DragonBreath-Auth`; the device does not enable CORS.
 
+## Authentication
+
+Each mutating route, `GET /api/v2/console`, the portal settings and OTA check the
+`X-DragonBreath-Auth` header:
+
+- **No control token set (default build):** a non-empty header passes. This is a
+  CSRF gate, not authentication.
+- **Control token set:** the header must equal the token (at most 64 characters).
+  The device compares in constant time. Else it returns HTTP 403 `auth_failed`.
+- **`CONFIG_DB_REQUIRE_CONTROL_TOKEN=y` and no token set:** while the Wi-Fi station
+  is associated, the device returns HTTP 403 `token_required`. While the station is
+  not associated, only setup AP clients can reach the device, and a non-empty header
+  passes. A setup AP client sets the first token with `POST /api/v2/token` or the
+  setup form field `ctl_token`. In this build, `POST /api/v2/token` refuses to clear a token
+  (HTTP 400 `token_required`).
+- **`CONFIG_DB_AUTH_LOCKOUT=y`:** after `CONFIG_DB_AUTH_LOCKOUT_MAX_FAILS` wrong
+  tokens (default 10) in `CONFIG_DB_AUTH_LOCKOUT_WINDOW_S` (default 60 s), every
+  check fails for `CONFIG_DB_AUTH_LOCKOUT_DURATION_S` (default 60 s) with HTTP 429
+  `auth_locked`. The correct token also fails during a lockout. A missing header
+  does not count as a wrong token.
+
+The shared portal routes use the same check: `/api/v1/provisioning/*`,
+`/api/v1/system/*` and `/update`. For each failure kind, they return the generic
+portal error, HTTP 403 `authorization required`.
+
 ## Read-only routes
 
 - `GET /api/v2/info` — API version, stable device ID, per-boot ID, firmware,
@@ -255,7 +280,8 @@ state:
 ```
 
 Defined error codes include `invalid_command`, `unsupported_api_version`,
-`auth_failed`, `revision_conflict`, `stale_lease`, `fault_latched`,
+`auth_failed`, `token_required` (HTTP 403), `auth_locked` (HTTP 429),
+`revision_conflict`, `stale_lease`, `fault_latched`,
 `inhibited`, `heater_busy` (enabling filtration while the heater is heating/cooling —
 HTTP 409), and `persist_failed` (an NVS write did not commit). Separately, `busy` is
 the HTTP 503 returned by `GET /api/v2/events` when both SSE slots are already in use —
@@ -321,7 +347,8 @@ These predate/sit beside the versioned control surface and are stable:
 - `POST /api/v2/token` — authenticated. Body `{"token":"<=64 chars>"}` sets the
   control token; `{"token":""}` / `{"token":null}` / `{}` clears it. The secret is
   never echoed; the response is `{"ok":true,"token_set":<bool>}`. Once a token is
-  set, every mutating request must carry it in `X-DragonBreath-Auth`.
+  set, every mutating request must carry it in `X-DragonBreath-Auth`. With
+  `CONFIG_DB_REQUIRE_CONTROL_TOKEN=y`, a clear returns HTTP 400 `token_required`.
 - `POST /update` — authenticated application-image OTA. Streams the `.bin` into the
   inactive slot, verifies it (image checksum + project identity — accepts a
   `dragonbreath` image **or** a stock `panda_breath` image so a user can revert to

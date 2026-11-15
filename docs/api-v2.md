@@ -106,6 +106,15 @@ The complete snapshot, not locally remembered intent, is the source of truth:
       "expires_in_ms": 299500
     }
   },
+  "first_heat": {
+    "state": "pass",
+    "ptc_rise_c": 23.0,
+    "ch_rise_c": 2.3,
+    "on_ms": 12000,
+    "stored": "pass",
+    "stock_hint": "none",
+    "enforced": true
+  },
   "safety": {
     "fault_latched": false,
     "inhibited": false,
@@ -113,6 +122,22 @@ The complete snapshot, not locally remembered intent, is the source of truth:
   }
 }
 ```
+
+`first_heat` reports the first-heat check (see `docs/SAFETY.md`). `state` is the
+state of this session: `idle`, `armed`, `eval`, `pass`, `crossed`, `no_rise` or
+`uncertain`. `uncertain` means that both channels rose. It reports only and does
+not latch. The next heat runs the check again.
+In `armed`, a window is open with less than 12 s of relay ON time. In `eval`, a
+window is open and a decision can come in each tick. `ptc_rise_c` and `ch_rise_c` are the rises of the open or last
+window in °C (one decimal). After a boot they are the stored rises. `on_ms` is
+the relay ON time of the open or last window. `stored` is the result in NVS:
+`unknown`, `pass`, `crossed` or `no_rise`. A stored result counts only for the
+thermistor mapping and offsets that it was measured with. `stock_hint` is the
+stock firmware's `ntc_bit` key: `none` (no key), `unknown`, `crossed`, `normal`
+or `invalid`. It is a hint only. `enforced` is `false` on a safe dev-board
+build: the check then reports only and never latches. A `crossed` or `no_rise`
+result latches the heater off with the `safety.reason`
+`thermistors crossed (first-heat check)` or `heater no-rise (first-heat check)`.
 
 `heater.commanded_duty` is the normalized duty admitted to the 10-second SSR
 window after the PID approach policy and non-latching thermal governors. It is
@@ -271,7 +296,7 @@ These predate/sit beside the versioned control surface and are stable:
   `"cool_release","cool_release_min","cool_release_max",`
   `"fb_cut","fb_cut_default","fb_cut_min","fb_cut_max",`
   `"filter_temp","filter_temp_min","filter_temp_max","filter_auto","leds_enabled",`
-  `"swap_thermistors","swap_thermistors_active"}`.
+  `"swap_thermistors","swap_thermistors_active","first_heat_stored","first_heat_stock_hint"}`.
   Open (read-only, no side effects). `cool_release` is the cooldown-fan "cool down
   to" temperature (30–65 °C, default 40). `fb_cut` is the element-foldback cut
   (90–104 °C; `0` = auto → the per-Rref `fb_cut_default`). `filter_temp` (20–60 °C,
@@ -283,7 +308,9 @@ These predate/sit beside the versioned control surface and are stable:
   connector assignments (bool, default
   `false`); `swap_thermistors_active` reports the mapping latched at boot. A
   changed selection is saved but requires a reboot to take effect.
-- `POST /settings?max=<°C>&comms_ms=<ms>&cool_release=<°C>&fb_cut=<°C>&filter_temp=<°C>&filter_auto=<0|1>&leds_enabled=<0|1>&swap_thermistors=<0|1>` — update any subset.
+  `first_heat_stored` and `first_heat_stock_hint` are the same values as
+  `first_heat.stored` and `first_heat.stock_hint` in the state document.
+- `POST /settings?max=<°C>&comms_ms=<ms>&cool_release=<°C>&fb_cut=<°C>&filter_temp=<°C>&filter_auto=<0|1>&leds_enabled=<0|1>&swap_thermistors=<0|1>&first_heat_rerun=1&first_heat_apply_swap=1` — update any subset.
   Auth-gated (`X-DragonBreath-Auth`). Safety values are clamped to the safe
   envelope server-side (the max-target ceiling can never exceed the absolute cap,
   the comms watchdog stays within its min/max) and the clamped effective values
@@ -292,6 +319,14 @@ These predate/sit beside the versioned control surface and are stable:
   **not** settable.
   `swap_thermistors` exchanges the two logical sensor inputs and their cutoff
   roles; a changed mapping is applied after reboot.
+  `first_heat_rerun=1` forgets the stored first-heat result. The next heat runs
+  the check again. If the reset cannot be saved, the response is HTTP 500, but
+  the check still runs again in this session.
+  `first_heat_apply_swap=1` stages the swap that a stored `crossed` result
+  suggests: the opposite of the active mapping. It applies after a reboot. The
+  reboot also resets the stored result, so the next heat checks the new
+  mapping. Without a stored `crossed` result the response is HTTP 409. The
+  firmware never applies a swap by itself.
 - `GET /api/v2/calibration` — the per-channel temperature calibration offsets plus
   their bounds and the live readings:
   `{"api_version":2,"chamber_offset_c","ptc_offset_c","min":-5,"max":5,"chamber_c","ptc_c","chamber_raw_c","ptc_raw_c"}`.

@@ -75,12 +75,13 @@ static void t_fh_pass_phase1(void)
     pb_heater_first_heat_t f = fh();
     CHECK(f.state == PB_FH_PASS);
     CHECK(f.on_ms == 12000);
-    // Glitch filter: the peak of min(this, last) lags one sample.
-    CHECK(f.ptc_rise_dc == 230 && f.ch_rise_dc == 23);
+    // The start is the median of the first three readings (26 C). The peak of
+    // min(this, last) lags one sample: 48 - 26 = 22 C.
+    CHECK(f.ptc_rise_dc == 220 && f.ch_rise_dc >= 21 && f.ch_rise_dc <= 23);
     CHECK(relay() == 1 && !pb_heater_is_faulted());
     CHECK(f.stored == PB_FH_STORED_PASS);
     CHECK(nvs_u("fh_state") == PB_FH_STORED_PASS);
-    CHECK(nvs_u("fh_ptc_dc") == 230 && nvs_u("fh_ch_dc") == 23);
+    CHECK(nvs_u("fh_ptc_dc") == 220 && nvs_u("fh_ch_dc") == f.ch_rise_dc);
     CHECK((uint32_t)nvs_u("fh_cfg") == fh_cfg_expected());
 }
 
@@ -89,7 +90,7 @@ static void t_fh_pass_phase2_skips(void)
     // The stored pass skips the check: a plant without a rise heats on.
     boot();
     CHECK(fh().state == PB_FH_PASS && fh().stored == PB_FH_STORED_PASS);
-    CHECK(fh().ptc_rise_dc == 230);
+    CHECK(fh().ptc_rise_dc == 220);
     start(25.0f, 25.0f, 50.0f);
     for (int i = 0; i < 200; ++i) { step(0.0f, 0.0f); CHECK(relay() == 1); }
     CHECK(!pb_heater_is_faulted() && fh().state == PB_FH_PASS);
@@ -115,41 +116,43 @@ static void t_fh_pass_pid(void)
 
 // --- crossed roles ------------------------------------------------------------------
 
-// Crossed roles: the "chamber" channel reads the element, the "PTC" channel the
-// outlet air at the start of the heat (nearly flat). CROSSED waits for the full
-// 30 s of ON time and needs a clear chamber lead.
+// Crossed leads: the "chamber" channel reads the element, the "PTC" channel the
+// outlet air, which also rises. The chamber rise is more than 2 x the PTC rise
+// + 2 C, and above 10 C at 12 s of ON time: WRONG_ROLES at 12 s.
 static void t_fh_crossed_phase1(void)
 {
     fresh_boot();
     start(25.0f, 25.0f, 70.0f);
-    for (int i = 0; i < 59; ++i) {
-        step(0.5f, 0.04f);
-        CHECK(!pb_heater_is_faulted() && relay() == 1);   // no CROSSED before 30 s
+    for (int i = 0; i < 23; ++i) {
+        step(0.5f, 0.15f);
+        CHECK(!pb_heater_is_faulted() && relay() == 1);   // no result before 12 s
     }
     unsigned high = env->high_writes[PB_GPIO_RELAY];
-    step(0.5f, 0.04f);
+    step(0.5f, 0.15f);
     CHECK(relay() == 0);
     CHECK(env->high_writes[PB_GPIO_RELAY] == high);
     CHECK(pb_heater_is_faulted());
-    CHECK(pb_heater_fault_code() == PB_FAULT_SENSORS_CROSSED);
-    CHECK(strcmp(pb_heater_fault_reason(), "thermistors crossed (first-heat check)") == 0);
+    CHECK(pb_heater_fault_code() == PB_FAULT_SENSOR_ROLES);
+    CHECK(strcmp(pb_heater_fault_reason(),
+                 "sensor roles wrong or PTC sensor not on element (first-heat check)") == 0);
     CHECK(pb_heater_get_target_c() == 0.0f);
-    CHECK(fh().state == PB_FH_CROSSED && fh().stored == PB_FH_STORED_CROSSED);
-    CHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == PB_FAULT_SENSORS_CROSSED);
-    CHECK(nvs_u("fh_state") == PB_FH_STORED_CROSSED);
-    CHECK(fh().ptc_rise_dc < 30 && fh().ch_rise_dc >= 290);   // flat PTC, clear chamber lead
+    CHECK(fh().state == PB_FH_WRONG_ROLES && fh().stored == PB_FH_STORED_WRONG_ROLES);
+    CHECK(fh().ptc_rise_dc >= 30);                  // the outlet air rose: no absolute PTC limit
+    CHECK(fh().ch_rise_dc >= 2 * fh().ptc_rise_dc + PB_FH_ROLES_MARGIN_DC);
+    CHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == PB_FAULT_SENSOR_ROLES);
+    CHECK(nvs_u("fh_state") == PB_FH_STORED_WRONG_ROLES);
     // Latched: cool readings do not bring heat back, a new target is refused.
     for (int i = 0; i < 10; ++i) { step(0.0f, 0.0f); CHECK(relay() == 0); }
     CHECK(set_target(50.0f) == ESP_ERR_INVALID_STATE);
-    CHECK(fh().state == PB_FH_CROSSED);
+    CHECK(fh().state == PB_FH_WRONG_ROLES);
     // The check never swaps the channels (pb_ntc_set_swap_thermistors is not
     // even linked into this test).
     CHECK(!env->ntc_swap_active);
     // The clear brings the session back to IDLE. The stored hint stays.
     CHECK(clear_fault() == ESP_OK);
     tick();
-    CHECK(fh().state == PB_FH_IDLE && fh().stored == PB_FH_STORED_CROSSED);
-    CHECK(nvs_u("fh_state") == PB_FH_STORED_CROSSED);
+    CHECK(fh().state == PB_FH_IDLE && fh().stored == PB_FH_STORED_WRONG_ROLES);
+    CHECK(nvs_u("fh_state") == PB_FH_STORED_WRONG_ROLES);
 }
 
 static void t_fh_crossed_phase2_swap_applied(void)
@@ -169,14 +172,14 @@ static void t_fh_crossed_phase2_swap_applied(void)
 
 static void t_fh_crossed_restored(void)
 {
-    // A crossed result latches over a power cycle like a hazard trip.
+    // A wrong-roles result latches over a power cycle like a hazard trip.
     fresh_boot();
     start(25.0f, 25.0f, 70.0f);
     run_window(0.5f, 0.0f, 100);
-    CHECK(pb_heater_fault_code() == PB_FAULT_SENSORS_CROSSED);
+    CHECK(pb_heater_fault_code() == PB_FAULT_SENSOR_ROLES);
     boot();
-    CHECK(pb_heater_is_faulted() && pb_heater_fault_code() == PB_FAULT_SENSORS_CROSSED);
-    CHECK(fh().stored == PB_FH_STORED_CROSSED && fh().state == PB_FH_IDLE);
+    CHECK(pb_heater_is_faulted() && pb_heater_fault_code() == PB_FAULT_SENSOR_ROLES);
+    CHECK(fh().stored == PB_FH_STORED_WRONG_ROLES && fh().state == PB_FH_IDLE);
     CHECK(set_target(50.0f) == ESP_ERR_INVALID_STATE);
 }
 
@@ -221,7 +224,7 @@ static void t_fh_dead_phase2_still_latched(void)
 static void t_fh_detached_ptc(void)
 {
     // The PTC thermistor is off the element: it reads the room. The chamber
-    // warms a little. Not enough for "crossed": no-rise.
+    // warms a little: below the WRONG_ROLES margin, so NO_RISE.
     fresh_boot();
     start(25.0f, 25.0f, 50.0f);
     run_window(0.02f, 0.0f, 100);
@@ -260,24 +263,29 @@ static void t_fh_small_ptc_lead_uncertain(void)
     CHECK(fh().ptc_rise_dc >= 30 && fh().ptc_rise_dc <= 2 * fh().ch_rise_dc);
 }
 
-static void t_fh_small_chamber_lead_is_no_rise(void)
+// The margins of WRONG_ROLES. Similar rises are never WRONG_ROLES.
+static void roles_case(float dch, float dptc, pb_fault_reason_t expect, pb_fh_state_t state)
 {
-    // The margins of CROSSED. Below them the PTC still did not rise: NO_RISE
-    // (fail-closed), not CROSSED.
     fresh_boot();
-    start(25.0f, 25.0f, 50.0f);
-    run_window(0.1f, 0.04f, 100);                  // chamber +5.9, PTC +2.3: lead 3.6
-    CHECK(pb_heater_fault_code() == PB_FAULT_SENSORS_CROSSED);
-    fresh_boot();
-    CHECK(clear_fault() == ESP_OK);
-    start(25.0f, 25.0f, 50.0f);
-    run_window(0.09f, 0.045f, 100);                // chamber +5.3, PTC +2.6: lead 2.7
-    CHECK(pb_heater_fault_code() == PB_FAULT_HEATER_NO_RISE);
-    fresh_boot();
-    CHECK(clear_fault() == ESP_OK);
-    start(25.0f, 25.0f, 50.0f);
-    run_window(0.08f, 0.0f, 100);                  // chamber +4.7 < 5.0
-    CHECK(pb_heater_fault_code() == PB_FAULT_HEATER_NO_RISE);
+    if (pb_heater_is_faulted()) CHECK(clear_fault() == ESP_OK);
+    start(25.0f, 25.0f, 70.0f);
+    run_window(dch, dptc, 100);
+    CHECKF(pb_heater_fault_code() == expect && fh().state == state,
+           "ramp %.3f/%.3f: code %d state %d (rises %d/%d)", (double)dch, (double)dptc,
+           (int)pb_heater_fault_code(), (int)fh().state, (int)fh().ptc_rise_dc, (int)fh().ch_rise_dc);
+}
+
+static void t_fh_roles_margins(void)
+{
+    // At 30 s: chamber 5.8 C, PTC 1.2 C: 5.8 >= 2 x 1.2 + 2 -> WRONG_ROLES.
+    roles_case(0.1f, 0.02f, PB_FAULT_SENSOR_ROLES, PB_FH_WRONG_ROLES);
+    // Chamber 3.4 C, PTC 1.2 C: below the margin, the PTC is flat -> NO_RISE.
+    roles_case(0.06f, 0.02f, PB_FAULT_HEATER_NO_RISE, PB_FH_NO_RISE);
+    // Crossed leads with fast outlet air: chamber 34.8 C, PTC 17.4 C. Not more
+    // than 2 x + 2 C: the ambiguous band, UNCERTAIN (no latch).
+    roles_case(0.6f, 0.3f, PB_FAULT_NONE, PB_FH_UNCERTAIN);
+    // Chamber 46 C, PTC 17.4 C: clear lead at 30 s -> WRONG_ROLES.
+    roles_case(0.8f, 0.3f, PB_FAULT_SENSOR_ROLES, PB_FH_WRONG_ROLES);
 }
 
 static void t_fh_glitch(void)
@@ -302,7 +310,7 @@ static void t_fh_relay_off_not_counted(void)
     for (int i = 0; i < 12; ++i) step(0.0f, 0.0f);         // 6 s ON
     CHECK(fh().on_ms == 6000);
     CHECK(set_target(29.0f) == ESP_OK);                      // target reached: relay off
-    for (int i = 0; i < 100; ++i) {                          // 50 s OFF
+    for (int i = 0; i < 40; ++i) {                           // 20 s OFF
         step(0.0f, 0.0f);
         CHECK(relay() == 0 && !pb_heater_is_faulted());
     }
@@ -319,9 +327,29 @@ static void t_fh_relay_off_not_counted(void)
     CHECK(fh().on_ms == 30000);
 }
 
+static void t_fh_low_duty_never_fails(void)
+{
+    // ON pulses at a low duty do not add up to a rise: no failed result after
+    // 60 s of wall time. The window closes at 300 s (a restart).
+    fresh_boot();
+    start(30.0f, 25.0f, 50.0f);
+    int64_t t0 = env->now_us;
+    for (int cycle = 0; cycle < 30; ++cycle) {               // 2.5 s ON, 7.5 s OFF
+        CHECK(set_target(50.0f) == ESP_OK);
+        for (int i = 0; i < 5; ++i) step(0.0f, 0.0f);
+        CHECK(set_target(29.0f) == ESP_OK);
+        for (int i = 0; i < 15; ++i) step(0.0f, 0.0f);
+        CHECK(!pb_heater_is_faulted());
+    }
+    CHECK(env->now_us - t0 == 300000000);
+    CHECK(fh().on_ms >= 30000 && fh().state == PB_FH_EVAL);
+    step(0.0f, 0.0f);
+    CHECK(fh().state == PB_FH_IDLE && fh().restarts == 1 && !pb_heater_is_faulted());
+}
+
 static void t_fh_wall_timeout(void)
 {
-    // A window without enough ON time closes after 120 s. The next relay-on
+    // A window without a result closes after 300 s. The next relay OFF->ON edge
     // opens a new one with new start readings.
     fresh_boot();
     start(30.0f, 25.0f, 50.0f);
@@ -329,11 +357,12 @@ static void t_fh_wall_timeout(void)
     for (int i = 0; i < 12; ++i) step(0.0f, 0.0f);
     CHECK(set_target(29.0f) == ESP_OK);                      // relay off
     while (fh().state == PB_FH_ARMED) {
-        CHECK(env->now_us - t0 <= 120000000);
+        CHECK(env->now_us - t0 <= 300000000);
         step(0.0f, 0.0f);
     }
-    CHECK(env->now_us - t0 == 120500000);
+    CHECK(env->now_us - t0 == 300500000);
     CHECK(fh().state == PB_FH_IDLE && !pb_heater_is_faulted());
+    CHECK(fh().restarts == 1);
     CHECK(set_target(50.0f) == ESP_OK);
     step(0.0f, 0.0f);
     CHECK(relay() == 1 && fh().state == PB_FH_ARMED && fh().on_ms == 0);
@@ -384,17 +413,104 @@ static void t_fh_clear_and_target_before_tick(void)
     CHECK(pb_heater_fault_code() == PB_FAULT_HEATER_NO_RISE);
 }
 
+static void edge(float chamber, float ptc)
+{
+    CHECK(set_target(29.0f) == ESP_OK);
+    sensors(chamber, ptc);
+    step(0.0f, 0.0f);
+    CHECK(relay() == 0);
+    CHECK(set_target(50.0f) == ESP_OK);
+    step(0.0f, 0.0f);
+    CHECK(relay() == 1);
+}
+
 static void t_fh_hot_start(void)
 {
-    // An element at 70 C or more cannot show a clear rise: no window.
+    // An element at 70 C or more, or 10 C or more above the chamber, can be at
+    // its equilibrium: no window opens on that relay-on edge.
     fresh_boot();
     start(30.0f, 75.0f, 50.0f);
+    CHECK(fh().state == PB_FH_IDLE && fh().skipped == 1);
+    // Relay on all the time: no new edge, no window.
     for (int i = 0; i < 200; ++i) { step(0.0f, 0.0f); CHECK(relay() == 1); }
     CHECK(fh().state == PB_FH_IDLE && !pb_heater_is_faulted());
-    // 69.9 C opens a window.
-    sensors(30.0f, 69.9f);
-    step(0.0f, 0.0f);
+    edge(30.0f, 69.9f);                         // the reviewer's case: equilibrium near 70 C
+    CHECK(fh().state == PB_FH_IDLE && fh().skipped == 2);
+    edge(30.0f, 40.0f);                         // 10.0 C above the chamber
+    CHECK(fh().state == PB_FH_IDLE && fh().skipped == 3);
+    edge(30.0f, 39.9f);
     CHECK(fh().state == PB_FH_ARMED);
+    // An element at its equilibrium just below the warm band does not rise.
+    // That case is out of spec (equilibrium < 10 C above the air): NO_RISE.
+    run_window(0.0f, 0.0f, 100);
+    CHECK(pb_heater_fault_code() == PB_FAULT_HEATER_NO_RISE);
+}
+
+static void t_fh_start_glitch(void)
+{
+    // A low glitch in the first reading of a window must not give a dead
+    // element a rise (the start is the median of three readings).
+    fresh_boot();
+    start(25.0f, 5.0f, 50.0f);                  // the PTC reading at the edge glitches low
+    sensors(25.0f, 25.0f);
+    run_window(0.0f, 0.0f, 100);
+    CHECK(pb_heater_fault_code() == PB_FAULT_HEATER_NO_RISE);
+    CHECK(fh().ptc_rise_dc == 0 && nvs_u("fh_state") == PB_FH_STORED_NO_RISE);
+}
+
+static void t_fh_offset_change_restarts(void)
+{
+    // An offset change moves the readings: the open window closes.
+    fresh_boot();
+    start(25.0f, 25.0f, 50.0f);
+    for (int i = 0; i < 10; ++i) step(0.0f, 1.0f);
+    env->ntc_offset_c[PB_NTC_CHAMBER] = -3.0f;
+    step(0.0f, 1.0f);
+    CHECK(fh().state == PB_FH_IDLE && fh().restarts == 1 && !pb_heater_is_faulted());
+}
+
+static void relay_low_at_result_write(const char *key)
+{
+    if (strcmp(key, "fh_state") == 0) CHECK(relay() == 0);
+}
+
+static void t_fh_relay_off_before_nvs(void)
+{
+    // The latch drops the relay before any NVS write of the result.
+    fresh_boot();
+    start(25.0f, 25.0f, 50.0f);
+    env->nvs_set_hook = relay_low_at_result_write;
+    run_window(0.0f, 0.0f, 100);
+    env->nvs_set_hook = NULL;
+    CHECK(pb_heater_fault_code() == PB_FAULT_HEATER_NO_RISE);
+    CHECK(nvs_u("fh_state") == PB_FH_STORED_NO_RISE);
+}
+
+static void rerun_from_http(void)
+{
+    host_ctx_t saved = env->ctx;
+    env->ctx = CTX_OTHER;
+    CHECK(pb_heater_first_heat_rerun() == ESP_OK);
+    env->ctx = saved;
+}
+
+static void t_fh_rerun_race(void)
+{
+    // A re-run lands in the tick that decides PASS: the PASS must not reach NVS.
+    fresh_boot();
+    start(25.0f, 25.0f, 50.0f);
+    for (int i = 0; i < 23; ++i) step(0.1f, 1.0f);
+    CHECK(fh().state == PB_FH_ARMED);
+    env->ntc_read_hook = rerun_from_http;
+    step(0.1f, 1.0f);                           // decides PASS
+    CHECK(nvs_u("fh_state") == PB_FH_STORED_UNKNOWN);
+    CHECK(fh().stored == PB_FH_STORED_UNKNOWN);
+    step(0.0f, 0.0f);                           // the re-run applies
+    CHECK(fh().state == PB_FH_IDLE);
+    CHECK(nvs_u("fh_state") == PB_FH_STORED_UNKNOWN);
+    advance_ms(5000);
+    tick();
+    CHECK(nvs_u("fh_state") == PB_FH_STORED_UNKNOWN);
 }
 
 // --- the hazard trips stay authoritative --------------------------------------------
@@ -416,8 +532,8 @@ static void t_fh_hazard_wins_crossed(void)
 {
     fresh_boot();
     start(25.0f, 25.0f, 70.0f);
-    for (int i = 0; i < 59; ++i) step(0.5f, 0.0f);
-    sensors(PB_HEATER_CHAMBER_MAX_C, 25.0f);     // the tick where crossed is due
+    for (int i = 0; i < 23; ++i) step(0.5f, 0.0f);
+    sensors(PB_HEATER_CHAMBER_MAX_C, 25.0f);     // the tick where WRONG_ROLES is due
     step(0.0f, 0.0f);
     CHECK(pb_heater_fault_code() == PB_FAULT_CHAMBER_OVERTEMP);
     CHECK(fh().state == PB_FH_IDLE && nvs_u("fh_state") == -1);
@@ -469,11 +585,12 @@ static void t_fh_limits_unchanged(void)
           PB_HEATER_COOL_RELEASE_MAX_C == 65.0f);
     // The persisted fault codes keep their values. The new ones are appended.
     CHECK(PB_FAULT_NVS_UNREADABLE == 9 && PB_FAULT_HEATER_NO_RISE == 10 &&
-          PB_FAULT_SENSORS_CROSSED == 11 && PB_FAULT__COUNT == 12);
+          PB_FAULT_SENSOR_ROLES == 11 && PB_FAULT__COUNT == 12);
     // The provisional first-heat thresholds (docs/SAFETY.md).
-    CHECK(PB_FH_MIN_ON_MS == 12000 && PB_FH_MAX_ON_MS == 30000 && PB_FH_MAX_WALL_MS == 120000);
-    CHECK(PB_FH_PASS_RISE_DC == 30 && PB_FH_CROSS_RISE_DC == 50 && PB_FH_CROSS_MARGIN_DC == 30 &&
-          PB_FH_HOT_START_DC == 700);
+    CHECK(PB_FH_MIN_ON_MS == 12000 && PB_FH_MAX_ON_MS == 30000 && PB_FH_FAIL_WALL_MS == 60000 &&
+          PB_FH_MAX_WALL_MS == 300000);
+    CHECK(PB_FH_PASS_RISE_DC == 30 && PB_FH_NO_RISE_DC == 20 && PB_FH_ROLES_MARGIN_DC == 20 &&
+          PB_FH_ROLES_EARLY_DC == 100 && PB_FH_HOT_START_DC == 700 && PB_FH_WARM_START_DC == 100);
 
     // A first-heat pass does not change a setting.
     fresh_boot();
@@ -490,22 +607,38 @@ static void t_fh_limits_unchanged(void)
 
 static void t_fh_pure(void)
 {
-    CHECK(pb_heater_first_heat_eval(11999, 500, 0) == PB_FH_EVAL_WAIT);
-    CHECK(pb_heater_first_heat_eval(11999, 0, 500) == PB_FH_EVAL_WAIT);
-    CHECK(pb_heater_first_heat_eval(12000, 30, 14) == PB_FH_EVAL_PASS);
-    CHECK(pb_heater_first_heat_eval(12000, 30, 15) == PB_FH_EVAL_WAIT);   // not > 2 x
-    CHECK(pb_heater_first_heat_eval(12000, 29, 0) == PB_FH_EVAL_WAIT);
-    CHECK(pb_heater_first_heat_eval(12000, 0, 500) == PB_FH_EVAL_WAIT);   // CROSSED waits for 30 s
-    CHECK(pb_heater_first_heat_eval(29999, 0, 500) == PB_FH_EVAL_WAIT);
-    CHECK(pb_heater_first_heat_eval(30000, 0, 50) == PB_FH_EVAL_CROSSED);
-    CHECK(pb_heater_first_heat_eval(30000, 0, 49) == PB_FH_EVAL_NO_RISE);    // chamber < 5 C
-    CHECK(pb_heater_first_heat_eval(30000, 29, 59) == PB_FH_EVAL_CROSSED);
-    CHECK(pb_heater_first_heat_eval(30000, 29, 58) == PB_FH_EVAL_NO_RISE);   // lead < 3 C
-    CHECK(pb_heater_first_heat_eval(30000, 30, 500) == PB_FH_EVAL_UNCERTAIN); // PTC rose: never CROSSED
-    CHECK(pb_heater_first_heat_eval(30000, 400, 500) == PB_FH_EVAL_UNCERTAIN);
-    CHECK(pb_heater_first_heat_eval(30000, 40, 25) == PB_FH_EVAL_UNCERTAIN);
-    CHECK(pb_heater_first_heat_eval(30000, 0, 29) == PB_FH_EVAL_NO_RISE);
-    CHECK(pb_heater_first_heat_eval(UINT32_MAX, -5, -5) == PB_FH_EVAL_NO_RISE);
+#define EV(on, p, c) pb_heater_first_heat_eval((on), (on), (p), (c))   // continuous heat
+    CHECK(EV(11999, 500, 0) == PB_FH_EVAL_WAIT);
+    CHECK(EV(11999, 0, 500) == PB_FH_EVAL_WAIT);
+    CHECK(EV(12000, 30, 14) == PB_FH_EVAL_PASS);
+    CHECK(EV(12000, 30, 15) == PB_FH_EVAL_WAIT);           // not > 2 x
+    CHECK(EV(12000, 29, 0) == PB_FH_EVAL_WAIT);
+    CHECK(EV(12000, 40, 100) == PB_FH_EVAL_WRONG_ROLES);   // early: 100 >= 2 x 40 + 20
+    CHECK(EV(12000, 41, 100) == PB_FH_EVAL_WAIT);
+    CHECK(EV(12000, 0, 99) == PB_FH_EVAL_WAIT);            // early needs 10 C
+    CHECK(EV(29999, 0, 99) == PB_FH_EVAL_WAIT);
+    CHECK(EV(30000, 0, 20) == PB_FH_EVAL_WRONG_ROLES);     // 20 >= 2 x 0 + 20
+    CHECK(EV(30000, 0, 19) == PB_FH_EVAL_NO_RISE);
+    CHECK(EV(30000, 19, 58) == PB_FH_EVAL_WRONG_ROLES);
+    CHECK(EV(30000, 19, 57) == PB_FH_EVAL_NO_RISE);
+    CHECK(EV(30000, 20, 59) == PB_FH_EVAL_UNCERTAIN);      // PTC rose 2 C, not 2 x + 2
+    CHECK(EV(30000, 200, 400) == PB_FH_EVAL_UNCERTAIN);    // similar rises: never WRONG_ROLES
+    CHECK(EV(30000, 200, 420) == PB_FH_EVAL_WRONG_ROLES);
+    CHECK(EV(30000, 40, 25) == PB_FH_EVAL_UNCERTAIN);
+    CHECK(pb_heater_first_heat_eval(UINT32_MAX, 30000, -5, -5) == PB_FH_EVAL_NO_RISE);
+#undef EV
+    // A low duty (wall time > 60 s) gives no failed result, but can pass.
+    CHECK(pb_heater_first_heat_eval(30000, 60000, 0, 0) == PB_FH_EVAL_NO_RISE);
+    CHECK(pb_heater_first_heat_eval(30000, 60001, 0, 0) == PB_FH_EVAL_WAIT);
+    CHECK(pb_heater_first_heat_eval(12000, 60001, 0, 500) == PB_FH_EVAL_WAIT);
+    CHECK(pb_heater_first_heat_eval(30000, 60001, 200, 300) == PB_FH_EVAL_WAIT);
+    CHECK(pb_heater_first_heat_eval(30000, 250000, 30, 0) == PB_FH_EVAL_PASS);
+    CHECK(pb_heater_first_heat_warm(700, 690) && !pb_heater_first_heat_warm(699, 690));
+    CHECK(pb_heater_first_heat_warm(400, 300) && !pb_heater_first_heat_warm(399, 300));
+    CHECK(!pb_heater_first_heat_warm(100, 300));          // crossed leads: PTC below chamber
+    CHECK(pb_heater_median3(1, 2, 3) == 2 && pb_heater_median3(3, 1, 2) == 2 &&
+          pb_heater_median3(2, 3, 1) == 2 && pb_heater_median3(-50, 250, 250) == 250 &&
+          pb_heater_median3(250, 250, 900) == 250 && pb_heater_median3(5, 5, 5) == 5);
     CHECK(pb_heater_c_to_dc(25.04f) == 250 && pb_heater_c_to_dc(25.05f) == 251);
     CHECK(pb_heater_c_to_dc(-1.06f) == -11 && pb_heater_c_to_dc(0.0f) == 0);
     CHECK(pb_heater_c_to_dc(NAN) == -1000 && pb_heater_c_to_dc(-INFINITY) == -1000);
@@ -513,7 +646,8 @@ static void t_fh_pure(void)
     CHECK(strcmp(pb_heater_first_heat_state_str(PB_FH_NO_RISE), "no_rise") == 0);
     CHECK(strcmp(pb_heater_first_heat_state_str(PB_FH_UNCERTAIN), "uncertain") == 0);
     CHECK(strcmp(pb_heater_first_heat_state_str((pb_fh_state_t)99), "unknown") == 0);
-    CHECK(strcmp(pb_heater_first_heat_stored_str(PB_FH_STORED_CROSSED), "crossed") == 0);
+    CHECK(strcmp(pb_heater_first_heat_stored_str(PB_FH_STORED_WRONG_ROLES), "wrong_roles") == 0);
+    CHECK(strcmp(pb_heater_first_heat_state_str(PB_FH_WRONG_ROLES), "wrong_roles") == 0);
     CHECK(strcmp(pb_heater_first_heat_stock_str(PB_FH_STOCK_NORMAL), "normal") == 0);
     CHECK(strcmp(pb_heater_first_heat_stock_str((pb_fh_stock_hint_t)99), "invalid") == 0);
     CHECK(strcmp(pb_heater_fault_str(PB_FAULT_HEATER_NO_RISE), "heater no-rise (first-heat check)") == 0);
@@ -534,7 +668,7 @@ static void t_fh_nvs_fail_pass(void)
     CHECK(nvs_u("fh_state") == -1);
     env->nvs_fail_set = 0;
     for (int i = 0; i < 5; ++i) step(0.0f, 0.0f);          // within 2.5 s
-    CHECK(nvs_u("fh_state") == PB_FH_STORED_PASS && nvs_u("fh_ptc_dc") == 230);
+    CHECK(nvs_u("fh_state") == PB_FH_STORED_PASS && nvs_u("fh_ptc_dc") == 220);
     unsigned sets = env->nvs_sets;
     for (int i = 0; i < 20; ++i) step(0.0f, 0.0f);
     CHECK(env->nvs_sets == sets);                           // nothing pending any more
@@ -630,9 +764,15 @@ static void t_fh_rerun(void)
     CHECK(fh().state == PB_FH_IDLE);
     start(25.0f, 25.0f, 50.0f);
     CHECK(fh().state == PB_FH_ARMED);
-    // A re-run while a window is open restarts it.
+    // A re-run while a window is open closes it. The next relay OFF->ON edge
+    // opens a new one.
     for (int i = 0; i < 20; ++i) step(0.0f, 0.0f);
     CHECK(pb_heater_first_heat_rerun() == ESP_OK);
+    step(0.0f, 0.0f);
+    CHECK(fh().state == PB_FH_IDLE && relay() == 1);
+    CHECK(set_target(0.0f) == ESP_OK);
+    step(0.0f, 0.0f);
+    CHECK(set_target(50.0f) == ESP_OK);
     step(0.0f, 0.0f);
     CHECK(fh().state == PB_FH_ARMED && fh().on_ms == 0);
 }
@@ -737,14 +877,19 @@ bool heater_first_heat_tests(void)
     RUN(t_fh_detached_ptc);
     RUN(t_fh_both_rise_uncertain);
     RUN(t_fh_small_ptc_lead_uncertain);
-    RUN(t_fh_small_chamber_lead_is_no_rise);
+    RUN(t_fh_roles_margins);
     RUN(t_fh_glitch);
     RUN(t_fh_relay_off_not_counted);
+    RUN(t_fh_low_duty_never_fails);
     RUN(t_fh_wall_timeout);
     RUN(t_fh_stop_aborts);
     RUN(t_fh_panic_aborts);
     RUN(t_fh_clear_and_target_before_tick);
     RUN(t_fh_hot_start);
+    RUN(t_fh_start_glitch);
+    RUN(t_fh_offset_change_restarts);
+    RUN(t_fh_relay_off_before_nvs);
+    RUN(t_fh_rerun_race);
     RUN(t_fh_hazard_wins_no_rise);
     RUN(t_fh_hazard_wins_crossed);
     RUN(t_fh_hazard_wins_ptc_overtemp);

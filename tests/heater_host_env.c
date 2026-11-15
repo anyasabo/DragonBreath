@@ -284,6 +284,7 @@ static esp_err_t nvs_set(nvs_handle_t h, const char *key, host_nvs_type_t type, 
     ENV_REQUIRE(env->crit_depth == 0, "nvs_set inside a critical section");
     host_nvs_handle_t *hh = handle_get(h);
     ENV_REQUIRE(hh->writable, "nvs_set on a read-only handle");
+    if (env->nvs_set_hook) env->nvs_set_hook(key);
     hh->n_sets++;
     env->nvs_sets++;
     if (env->nvs_fail_set) return env->nvs_fail_set;

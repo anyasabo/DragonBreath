@@ -27,6 +27,11 @@ pb_ntc_status_t pb_ntc_read(pb_ntc_channel_t ch, float *out_c)
 {
     CHECK(ch == PB_NTC_CHAMBER || ch == PB_NTC_PTC);
     env->ntc_reads++;
+    if (ch == PB_NTC_PTC && env->ntc_read_hook) {
+        void (*hook)(void) = env->ntc_read_hook;   // another task runs at this point
+        env->ntc_read_hook = NULL;
+        hook();
+    }
     pb_ntc_status_t st = (pb_ntc_status_t)env->ntc_status[ch];
     if (out_c) *out_c = (st == PB_NTC_OK) ? env->ntc_temp[ch] : NAN;
     return st;

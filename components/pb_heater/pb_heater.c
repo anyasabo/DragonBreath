@@ -61,11 +61,14 @@ static bool        s_heat_intent;       // control-task only — bang-bang chamb
 static pb_fh_state_t s_fh;
 static int64_t     s_fh_t0_us, s_fh_last_us, s_fh_on_us;
 static int32_t     s_fh_ptc0, s_fh_ch0;            // start readings, tenths
+static int32_t     s_fh_ptc_first[2], s_fh_ch_first[2];   // first two readings of the window
+static uint8_t     s_fh_nstart;                    // readings taken for the start (0..3)
 static int32_t     s_fh_ptc_prev, s_fh_ch_prev;    // last readings, for the glitch filter
 static int32_t     s_fh_ptc_peak, s_fh_ch_peak;
 static int32_t     s_fh_ptc_rise, s_fh_ch_rise;
 static uint32_t    s_fh_cfg;                       // mapping fingerprint at the start
 static int64_t     s_fh_retry_us;
+static uint32_t    s_fh_restarts, s_fh_skipped;    // published counters (this boot)
 static bool        s_fh_store_warned;              // under the persist lock: log one failure only
 // Guarded by s_mux: the published snapshot, the re-run request and the NVS write
 // that is requested or pending (the tick retries it).
@@ -77,11 +80,7 @@ static uint8_t     s_fh_store_val;
 static int32_t     s_fh_store_ptc, s_fh_store_ch;
 static uint32_t    s_fh_store_cfg;
 
-#ifdef CONFIG_PB_DEVBOARD_SAFE
-#define FH_ENFORCED false     // no mains, no element: report only, never latch or store
-#else
-#define FH_ENFORCED true
-#endif
+#define FH_ENFORCED (PB_FH_ENFORCED != 0)   // see pb_heater.h: dev board or REPORT_ONLY
 
 // Persisted settings live in the shared app_nvs namespace (centi-°C / ms u32).
 #define NVS_NS             "app_nvs"
@@ -113,7 +112,7 @@ static const char *const k_fault_str[PB_FAULT__COUNT] = {
     [PB_FAULT_EMERGENCY]        = "safety trip",
     [PB_FAULT_NVS_UNREADABLE]   = "persisted fault state unreadable",
     [PB_FAULT_HEATER_NO_RISE]   = "heater no-rise (first-heat check)",
-    [PB_FAULT_SENSORS_CROSSED]  = "thermistors crossed (first-heat check)",
+    [PB_FAULT_SENSOR_ROLES]  = "sensor roles wrong or PTC sensor not on element (first-heat check)",
 };
 
 const char *pb_heater_fault_str(pb_fault_reason_t code)
@@ -214,6 +213,8 @@ esp_err_t pb_heater_init(void)
     s_fh_store_pending = false;
     taskEXIT_CRITICAL(&s_mux);
     s_fh = PB_FH_IDLE;   // pb_heater_load_first_heat() restores a stored pass
+    s_fh_nstart = 0;
+    s_fh_restarts = s_fh_skipped = 0;
 #ifdef CONFIG_PB_DEVBOARD_SAFE
     ESP_LOGW(TAG, "safe dev-board backend: relay GPIO compiled out");
 #else
@@ -671,7 +672,7 @@ const char *pb_heater_first_heat_state_str(pb_fh_state_t s)
     case PB_FH_ARMED:   return "armed";
     case PB_FH_EVAL:    return "eval";
     case PB_FH_PASS:    return "pass";
-    case PB_FH_CROSSED: return "crossed";
+    case PB_FH_WRONG_ROLES: return "wrong_roles";
     case PB_FH_NO_RISE: return "no_rise";
     case PB_FH_UNCERTAIN: return "uncertain";
     default:            return "unknown";
@@ -682,7 +683,7 @@ const char *pb_heater_first_heat_stored_str(pb_fh_stored_t s)
 {
     switch (s) {
     case PB_FH_STORED_PASS:    return "pass";
-    case PB_FH_STORED_CROSSED: return "crossed";
+    case PB_FH_STORED_WRONG_ROLES: return "wrong_roles";
     case PB_FH_STORED_NO_RISE: return "no_rise";
     default:                   return "unknown";
     }
@@ -877,6 +878,8 @@ static void fh_publish(void)   // control task
     s_fh_pub.ch_rise_dc = s_fh_ch_rise;
     s_fh_pub.on_ms = s_fh_on_us >= (int64_t)UINT32_MAX * 1000 ? UINT32_MAX
                                                                : (uint32_t)(s_fh_on_us / 1000);
+    s_fh_pub.restarts = s_fh_restarts;
+    s_fh_pub.skipped = s_fh_skipped;
     taskEXIT_CRITICAL(&s_mux);
 }
 
@@ -899,23 +902,55 @@ static void fh_abort(const char *why)
 // heat stops.
 static void fh_release_fail(bool armed)
 {
-    bool fail = s_fh == PB_FH_CROSSED || s_fh == PB_FH_NO_RISE;
+    bool fail = s_fh == PB_FH_WRONG_ROLES || s_fh == PB_FH_NO_RISE;
     if ((fail && (FH_ENFORCED || !armed)) || (s_fh == PB_FH_UNCERTAIN && !armed)) {
         s_fh = PB_FH_IDLE;
         fh_publish();
     }
 }
 
-// One step of an open window with valid readings. Returns the fault to latch,
-// or PB_FAULT_NONE.
+// Close an open window without a result, count it as a restart. The next relay
+// OFF->ON edge opens a new one.
+static void fh_restart(const char *why)
+{
+    (void)why;                       // unused if logging is compiled out
+    s_fh = PB_FH_IDLE;
+    s_fh_restarts++;
+    fh_publish();
+    ESP_LOGI(TAG, "first-heat: window closed without a result (%s)", why);
+}
+
+// One step of an open window with valid readings. Latches a failed result
+// itself (through trip()) and returns its fault code, or PB_FAULT_NONE.
 static pb_fault_reason_t fh_step(float ptc_c, float ch_c, int64_t now)
 {
     if (!fh_window_open()) return PB_FAULT_NONE;
+    if (fh_cfg_now() != s_fh_cfg) {  // an offset changed: the readings moved
+        fh_restart("offset changed");
+        return PB_FAULT_NONE;
+    }
     int64_t dt = now - s_fh_last_us;
     if (s_on && dt > 0) s_fh_on_us += dt;      // the relay was on since the last tick
     s_fh_last_us = now;
-    // Peak of min(this, last) reading: one glitch sample does not make a rise.
     int32_t p = pb_heater_c_to_dc(ptc_c), c = pb_heater_c_to_dc(ch_c);
+    if (s_fh_nstart < 3) {
+        // The start reading is the median of the first three readings.
+        if (s_fh_nstart < 2) {
+            s_fh_ptc_first[s_fh_nstart] = p;
+            s_fh_ch_first[s_fh_nstart] = c;
+            s_fh_nstart++;
+            fh_publish();
+            return PB_FAULT_NONE;
+        }
+        s_fh_ptc0 = pb_heater_median3(s_fh_ptc_first[0], s_fh_ptc_first[1], p);
+        s_fh_ch0 = pb_heater_median3(s_fh_ch_first[0], s_fh_ch_first[1], c);
+        s_fh_ptc_peak = s_fh_ptc0;
+        s_fh_ch_peak = s_fh_ch0;
+        s_fh_ptc_prev = s_fh_ptc_first[1];
+        s_fh_ch_prev = s_fh_ch_first[1];
+        s_fh_nstart = 3;
+    }
+    // Peak of min(this, last) reading: one glitch sample does not make a rise.
     int32_t pf = p < s_fh_ptc_prev ? p : s_fh_ptc_prev;
     int32_t cf = c < s_fh_ch_prev ? c : s_fh_ch_prev;
     s_fh_ptc_prev = p;
@@ -926,7 +961,9 @@ static pb_fault_reason_t fh_step(float ptc_c, float ch_c, int64_t now)
     s_fh_ch_rise = s_fh_ch_peak - s_fh_ch0;
     uint32_t on_ms = s_fh_on_us >= (int64_t)UINT32_MAX * 1000 ? UINT32_MAX
                                                               : (uint32_t)(s_fh_on_us / 1000);
-    pb_fh_eval_t e = pb_heater_first_heat_eval(on_ms, s_fh_ptc_rise, s_fh_ch_rise);
+    int64_t wall_us = now - s_fh_t0_us;
+    uint32_t wall_ms = wall_us >= (int64_t)UINT32_MAX * 1000 ? UINT32_MAX : (uint32_t)(wall_us / 1000);
+    pb_fh_eval_t e = pb_heater_first_heat_eval(on_ms, wall_ms, s_fh_ptc_rise, s_fh_ch_rise);
     pb_fault_reason_t code = PB_FAULT_NONE;
     pb_fh_stored_t store = PB_FH_STORED_UNKNOWN;
     switch (e) {
@@ -934,10 +971,10 @@ static pb_fault_reason_t fh_step(float ptc_c, float ch_c, int64_t now)
         s_fh = PB_FH_PASS;
         store = PB_FH_STORED_PASS;
         break;
-    case PB_FH_EVAL_CROSSED:
-        s_fh = PB_FH_CROSSED;
-        store = PB_FH_STORED_CROSSED;
-        code = PB_FAULT_SENSORS_CROSSED;
+    case PB_FH_EVAL_WRONG_ROLES:
+        s_fh = PB_FH_WRONG_ROLES;
+        store = PB_FH_STORED_WRONG_ROLES;
+        code = PB_FAULT_SENSOR_ROLES;
         break;
     case PB_FH_EVAL_NO_RISE:
         s_fh = PB_FH_NO_RISE;
@@ -948,12 +985,11 @@ static pb_fault_reason_t fh_step(float ptc_c, float ch_c, int64_t now)
         s_fh = PB_FH_UNCERTAIN;      // report only: no latch, nothing stored
         break;
     default:
-        if (now - s_fh_t0_us > (int64_t)PB_FH_MAX_WALL_MS * 1000) {
-            s_fh = PB_FH_IDLE;       // too little ON time: start a new window later
-            ESP_LOGI(TAG, "first-heat: window timed out after %u ms ON, restart", (unsigned)on_ms);
-        } else if (s_fh == PB_FH_ARMED && on_ms >= PB_FH_MIN_ON_MS) {
-            s_fh = PB_FH_EVAL;
+        if (wall_ms > PB_FH_MAX_WALL_MS) {
+            fh_restart("too little ON time");
+            return PB_FAULT_NONE;
         }
+        if (s_fh == PB_FH_ARMED && on_ms >= PB_FH_MIN_ON_MS) s_fh = PB_FH_EVAL;
         break;
     }
     fh_publish();
@@ -961,27 +997,41 @@ static pb_fault_reason_t fh_step(float ptc_c, float ch_c, int64_t now)
     ESP_LOGW(TAG, "first-heat: %s after %u ms ON: PTC rise %d dC, chamber rise %d dC%s",
              pb_heater_first_heat_state_str(s_fh), (unsigned)on_ms,
              (int)s_fh_ptc_rise, (int)s_fh_ch_rise,
-             FH_ENFORCED ? "" : " (dev board: report only)");
+             FH_ENFORCED ? "" : " (report only)");
     if (!FH_ENFORCED || e == PB_FH_EVAL_UNCERTAIN) return PB_FAULT_NONE;
+    if (code != PB_FAULT_NONE) trip(code);     // relay off first, then the NVS record
+    // A re-run that arrived during this tick wins: it already wrote UNKNOWN, and
+    // the next tick closes this result. Do not store over it.
     taskENTER_CRITICAL(&s_mux);
-    fh_request_store_locked(store, s_fh_ptc_rise, s_fh_ch_rise, s_fh_cfg);
+    bool rerun = s_fh_rerun_req;
+    if (!rerun) fh_request_store_locked(store, s_fh_ptc_rise, s_fh_ch_rise, s_fh_cfg);
     taskEXIT_CRITICAL(&s_mux);
-    s_fh_retry_us = now;
-    (void)fh_store(false);           // the tick retries a failed or contended write
+    if (!rerun) {
+        s_fh_retry_us = now;
+        (void)fh_store(false);       // the tick retries a failed or contended write
+    }
     return code;
 }
 
-// After the drive decision: the first relay-on of a heat opens a window.
-static void fh_after_drive(bool drive, float ptc_c, float ch_c, int64_t now)
+// After the drive decision: a relay OFF->ON edge opens a window, unless the
+// element is already warm (it can be at its equilibrium and cannot rise).
+static void fh_after_drive(bool drive, bool was_on, float ptc_c, float ch_c, int64_t now)
 {
-    if (s_fh != PB_FH_IDLE || !drive) return;
+    if (s_fh != PB_FH_IDLE || !drive || was_on) return;
     int32_t p = pb_heater_c_to_dc(ptc_c), c = pb_heater_c_to_dc(ch_c);
-    if (p >= PB_FH_HOT_START_DC) return;   // a hot element cannot show a clear rise
+    if (pb_heater_first_heat_warm(p, c)) {
+        s_fh_skipped++;
+        fh_publish();
+        return;
+    }
     s_fh = PB_FH_ARMED;
     s_fh_t0_us = s_fh_last_us = now;
     s_fh_on_us = 0;
-    s_fh_ptc0 = s_fh_ptc_prev = s_fh_ptc_peak = p;
-    s_fh_ch0 = s_fh_ch_prev = s_fh_ch_peak = c;
+    s_fh_ptc_first[0] = p;
+    s_fh_ch_first[0] = c;
+    s_fh_nstart = 1;
+    s_fh_ptc0 = s_fh_ptc_peak = p;
+    s_fh_ch0 = s_fh_ch_peak = c;
     s_fh_ptc_rise = s_fh_ch_rise = 0;
     s_fh_cfg = fh_cfg_now();
     fh_publish();
@@ -1104,11 +1154,7 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
     // path as the hazard checks above (see pb_heater.h).
     const int64_t now_us = esp_timer_get_time();
     fh_release_fail(true);
-    pb_fault_reason_t fh_code = fh_step(ptc_c, chamber_c, now_us);
-    if (fh_code != PB_FAULT_NONE) {
-        trip(fh_code);
-        return;
-    }
+    if (fh_step(ptc_c, chamber_c, now_us) != PB_FAULT_NONE) return;   // latched in fh_step
 
     // Step 1 — select the process variable. Policy supplies a finite external value
     // only for AUTO mode with fresh Bambu telemetry and the persisted preference on;
@@ -1167,8 +1213,9 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
         else if (s_local_cut)            bb_constraint = PB_HEATER_CONSTRAINT_LOCAL_FOLDBACK;
         else if (regulation_c >= target) bb_constraint = PB_HEATER_CONSTRAINT_TARGET_REACHED;
         telemetry_set(bb_drive ? 1.0f : 0.0f, 1.0f, bb_constraint);
+        const bool bb_was_on = s_on;
         if (bb_drive != s_on) ssr_set(bb_drive);
-        fh_after_drive(bb_drive, ptc_c, chamber_c, now_us);
+        fh_after_drive(bb_drive, bb_was_on, ptc_c, chamber_c, now_us);
         return;
     }
 
@@ -1210,6 +1257,7 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
     // still plain on/off drive of a zero-cross SSR; there is no phase cutting.
     bool drive = pb_heater_pid_window_on(
         &s_pid, commanded_duty, esp_timer_get_time());
+    const bool was_on = s_on;
     if (drive != s_on) ssr_set(drive);
-    fh_after_drive(drive, ptc_c, chamber_c, now_us);
+    fh_after_drive(drive, was_on, ptc_c, chamber_c, now_us);
 }

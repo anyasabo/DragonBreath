@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Host test of the first-heat check in a CONFIG_PB_DEVBOARD_SAFE build of the
-// REAL pb_heater.c. A dev board has no mains and no element, so the readings
-// never rise. The check must report its result and never latch a fault or
-// store a result.
+// Host test of the first-heat check in a report-only build of the REAL
+// pb_heater.c: a CONFIG_PB_DEVBOARD_SAFE build (no mains, no element), or a
+// production build with CONFIG_PB_FIRST_HEAT_REPORT_ONLY=y (the recovery for a false
+// trip). The check must report its result and never latch or store a result.
 #define _DEFAULT_SOURCE
 #include "heater_host_env.h"
 #include "pb_board.h"
@@ -13,8 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifndef CONFIG_PB_DEVBOARD_SAFE
-#error "build this test with -DCONFIG_PB_DEVBOARD_SAFE"
+#if PB_FH_ENFORCED
+#error "build this test with -DCONFIG_PB_DEVBOARD_SAFE or -DCONFIG_PB_FIRST_HEAT_REPORT_ONLY"
 #endif
 
 pb_ntc_status_t pb_ntc_read(pb_ntc_channel_t ch, float *out_c)
@@ -33,7 +33,11 @@ static void tick(void)
     pb_heater_tick();
     env->ctx = CTX_OTHER;
     env_check_quiescent();
+#ifdef CONFIG_PB_DEVBOARD_SAFE
     CHECK(env->writes[PB_GPIO_RELAY] == 0);     // the relay GPIO is compiled out
+#else
+    CHECK(env->level[PB_GPIO_RELAY] == (pb_heater_is_on() ? 1 : 0));
+#endif
 }
 
 static void heat(float dch, float dptc, int ticks)
@@ -88,8 +92,8 @@ static void t_dev_no_rise_reports_only(void)
 static void t_dev_crossed_reports_only(void)
 {
     boot_and_start();
-    heat(0.5f, 0.0f, 60);                       // 30 s ON, chamber 55 C < target
-    CHECK(fh().state == PB_FH_CROSSED);
+    heat(0.5f, 0.0f, 30);                       // 15 s ON, chamber 40 C < target
+    CHECK(fh().state == PB_FH_WRONG_ROLES);
     CHECK(!pb_heater_is_faulted() && pb_heater_is_on());
     CHECK(env->nvs_sets == 0);
 }
@@ -122,9 +126,13 @@ int main(void)
     RUN(t_dev_pass_not_stored);
     RUN(t_dev_hazard_still_trips);
     if (!ok) {
-        fprintf(stderr, "pb_heater first-heat dev-board host test: FAILED\n");
+        fprintf(stderr, "pb_heater first-heat report-only host test: FAILED\n");
         return 1;
     }
-    printf("pb_heater first-heat dev-board host test: all passed\n");
+#ifdef CONFIG_PB_DEVBOARD_SAFE
+    printf("pb_heater first-heat report-only host test (dev board): all passed\n");
+#else
+    printf("pb_heater first-heat report-only host test (REPORT_ONLY=y): all passed\n");
+#endif
     return 0;
 }

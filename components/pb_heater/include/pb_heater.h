@@ -12,6 +12,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"                 // CONFIG_PB_FIRST_HEAT_REPORT_ONLY, CONFIG_PB_DEVBOARD_SAFE
+#endif
 
 // Machine-readable fault cause. Persisted across reboot as a u8 (see
 // pb_heater_load_fault); a live free-form reason string (pb_heater_fault_reason)
@@ -29,7 +32,7 @@ typedef enum {
     PB_FAULT_EMERGENCY,           // generic external emergency_off trip
     PB_FAULT_NVS_UNREADABLE,      // boot fail-safe: persisted fault state unreadable
     PB_FAULT_HEATER_NO_RISE,      // first-heat check: the PTC did not rise with the relay on
-    PB_FAULT_SENSORS_CROSSED,     // first-heat check: the chamber rose more than the PTC
+    PB_FAULT_SENSOR_ROLES,     // first-heat check: the chamber rose more than the PTC
     PB_FAULT__COUNT              // sentinel: any stored code >= this is treated as
                                   // corrupt and mapped to a generic latched fault
 } pb_fault_reason_t;
@@ -234,53 +237,86 @@ static inline pb_fault_reason_t pb_heater_eval_trip(
 
 // --- First-heat check ---------------------------------------------------------
 // A plausibility check of the thermistor roles and the element, like the stock
-// firmware's first-heat check, but it never swaps the channels. When the relay
-// first turns on, pb_heater_tick() records the PTC and chamber readings. It then
-// counts relay ON time only. It compares the rises (peak minus start, in
-// integer tenths of a degree):
+// firmware's first-heat check, but it never swaps the channels.
+//
+// Window: a relay OFF->ON edge opens a window, unless the element is already
+// warm (see the start bands below). The start reading of each channel is the
+// median of its first three readings (one glitch cannot make a false start).
+// The window counts relay ON time only. A rise is the peak minus the start, in
+// integer tenths of a degree. The peak uses the lower of each two consecutive
+// readings (one glitch cannot make a false rise). With p = PTC rise and
+// c = chamber rise:
 //   from PB_FH_MIN_ON_MS of ON time:
-//     PTC rise >= PB_FH_PASS_RISE_DC and PTC rise > 2 x chamber rise -> PASS
-//   at PB_FH_MAX_ON_MS of ON time, if no PASS:
-//     PTC rise < PB_FH_PASS_RISE_DC and chamber rise >= PB_FH_CROSS_RISE_DC
-//       and chamber rise >= PTC rise + PB_FH_CROSS_MARGIN_DC          -> CROSSED
-//     PTC rise < PB_FH_PASS_RISE_DC, other cases                      -> NO_RISE
-//     PTC rise >= PB_FH_PASS_RISE_DC (both channels rose)             -> UNCERTAIN
-// CROSSED and NO_RISE latch the heater off with their own fault cause. UNCERTAIN
-// only reports (no latch, nothing stored) and the next heat runs the check again.
+//     p >= PB_FH_PASS_RISE_DC and p > 2 c                               -> PASS
+//   from PB_FH_MIN_ON_MS of ON time, only within PB_FH_FAIL_WALL_MS of the open:
+//     c >= 2 p + PB_FH_ROLES_MARGIN_DC and c >= PB_FH_ROLES_EARLY_DC    -> WRONG_ROLES
+//   at PB_FH_MAX_ON_MS of ON time, only within PB_FH_FAIL_WALL_MS of the open:
+//     c >= 2 p + PB_FH_ROLES_MARGIN_DC                                  -> WRONG_ROLES
+//     p < PB_FH_NO_RISE_DC                                              -> NO_RISE
+//     other cases (both rose by similar amounts)                       -> UNCERTAIN
+// A failed result thus needs mostly continuous heat (duty >= 50 %): short ON
+// pulses at a low duty do not add up to a rise. A low-duty window can still
+// pass. Without a result after PB_FH_MAX_WALL_MS the window closes (a restart,
+// counted in `restarts`) and the next relay OFF->ON edge opens a new one.
+// WRONG_ROLES and NO_RISE latch the heater off with their own fault cause.
+// UNCERTAIN only reports (no latch, nothing stored). The next heat checks again.
 //
-// Why CROSSED needs a margin and waits for the end of the window: the chamber
+// Why WRONG_ROLES is "chamber rise >= 2 x PTC rise + 2 C": the chamber
 // thermistor sits in the heater's own outlet air. At full power the outlet air
-// can rise 75-150 K above the inlet (estimate, 0.1-0.2 m3/min airflow). It
-// cannot get hotter than the element, so "chamber rose more than the PTC" means
-// crossed thermistors OR a PTC thermistor that lags the element (poor thermal
-// contact, thermistor mass). A well-coupled PTC thermistor rises about 1.5-3 C/s
-// (#122 trace: 1.44 C/s), so it passes long before 30 s. CROSSED therefore needs
-// a PTC that stayed nearly flat for the whole 30 s AND a clear chamber lead.
-// When both channels rise a lot, the result is UNCERTAIN, never CROSSED. A PTC
-// that stays below 3 C in 30 s of ON time is a NO_RISE either way: the PTC
-// cutoff cannot protect an element that its thermistor does not see.
+// can rise 75-150 K above the inlet (estimate, 0.1-0.2 m3/min airflow), so with
+// crossed leads the "PTC" channel (the outlet air) also rises quickly: an
+// absolute PTC limit would miss crossed leads. But the outlet air cannot get
+// hotter than the element, and it heats later: in a correct unit the PTC rise is
+// larger than the chamber rise. A chamber rise of twice the PTC rise plus a
+// margin thus means crossed leads OR a PTC thermistor that lags the element or
+// is not on it. Both are faults: the PTC cutoff cannot see the element. A
+// well-coupled PTC thermistor rises about 1.5-3 C/s (#122 trace: 1.44 C/s), so
+// a correct unit passes long before 30 s. When both rises are similar, the
+// result is UNCERTAIN, never WRONG_ROLES.
 //
-// The check
-// can only remove heat: it never writes the relay GPIO by another path, never
-// changes the thermistor mapping, and never changes a limit. A stored PASS skips
-// the check on later boots until the thermistor mapping or an offset changes.
+// Supported plant (the host-test oracle asserts that such a plant never
+// latches): element power >= 150 W while the relay is on (300 W nominal: a
+// 230 V unit on 120 V mains, about 75 W, is out of spec), the element can reach
+// >= 30 K above the air, and both thermistors agree within +-2 C at the same
+// temperature. Out of spec, a correct unit can latch NO_RISE.
+// CONFIG_PB_FIRST_HEAT_REPORT_ONLY=y is the build-time recovery: report only.
 //
-// PROVISIONAL thresholds: they come from the stock firmware (3 C in 12 s) and
+// Start bands: a PTC start reading >= PB_FH_HOT_START_DC, or >= the chamber
+// reading + PB_FH_WARM_START_DC, means the element is already warm (it can be
+// at its equilibrium and cannot rise). Then no window opens until the next
+// relay OFF->ON edge.
+//
+// The check can only remove heat: it latches through the same trip path as the
+// hazard checks, never changes the thermistor mapping, and never changes a
+// limit. A stored PASS skips the check on later boots until the thermistor
+// mapping or an offset changes.
+//
+// PROVISIONAL thresholds: they come from the stock firmware (2-3 C in 12 s) and
 // are not yet checked against a first-heat /diag capture of an 82k and a 33k board.
-#define PB_FH_MIN_ON_MS        12000   // ON time before a PASS (stock: 12 s)
-#define PB_FH_MAX_ON_MS        30000   // ON time for CROSSED / NO_RISE / UNCERTAIN
-#define PB_FH_MAX_WALL_MS     120000   // wall time limit of one window; then restart
-#define PB_FH_PASS_RISE_DC        30   // 3.0 C PTC rise for a pass; below it the PTC is "flat"
-#define PB_FH_CROSS_RISE_DC       50   // 5.0 C minimum chamber rise for CROSSED (stock: 3 C)
-#define PB_FH_CROSS_MARGIN_DC     30   // 3.0 C minimum lead of the chamber over the PTC
-#define PB_FH_HOT_START_DC       700   // PTC at or above 70.0 C at the start: no window
+#define PB_FH_MIN_ON_MS        12000   // ON time before a result (stock: 12 s)
+#define PB_FH_MAX_ON_MS        30000   // ON time for the final result
+#define PB_FH_FAIL_WALL_MS     60000   // a failed result only within this wall time of the open
+#define PB_FH_MAX_WALL_MS     300000   // wall time limit of one window; then a restart
+#define PB_FH_PASS_RISE_DC        30   // 3.0 C PTC rise for a pass
+#define PB_FH_NO_RISE_DC          20   // PTC rise below 2.0 C at 30 s -> NO_RISE (stock: 2 C)
+#define PB_FH_ROLES_MARGIN_DC     20   // chamber rise >= 2 x PTC rise + 2.0 C -> WRONG_ROLES
+#define PB_FH_ROLES_EARLY_DC     100   // before 30 s only with a chamber rise >= 10.0 C
+#define PB_FH_HOT_START_DC       700   // PTC >= 70.0 C at the edge: no window
+#define PB_FH_WARM_START_DC      100   // PTC >= chamber + 10.0 C at the edge: no window
+
+// Fail-closed default: a build without the option enforces the check.
+#if defined(CONFIG_PB_DEVBOARD_SAFE) || defined(CONFIG_PB_FIRST_HEAT_REPORT_ONLY)
+#define PB_FH_ENFORCED 0               // dev board, or the recovery build: report only
+#else
+#define PB_FH_ENFORCED 1
+#endif
 
 typedef enum {
     PB_FH_IDLE = 0,      // no window open (no relay ON yet, or stopped/aborted)
     PB_FH_ARMED,         // window open, ON time below PB_FH_MIN_ON_MS
     PB_FH_EVAL,          // ON time at or above PB_FH_MIN_ON_MS, no decision yet
     PB_FH_PASS,
-    PB_FH_CROSSED,
+    PB_FH_WRONG_ROLES,   // crossed leads, or the PTC thermistor is not on the element
     PB_FH_NO_RISE,
     PB_FH_UNCERTAIN,     // both channels rose: report only, the next heat checks again
 } pb_fh_state_t;
@@ -289,7 +325,7 @@ typedef enum {
 typedef enum {
     PB_FH_STORED_UNKNOWN = 0,
     PB_FH_STORED_PASS    = 1,
-    PB_FH_STORED_CROSSED = 2,
+    PB_FH_STORED_WRONG_ROLES = 2,
     PB_FH_STORED_NO_RISE = 3,
 } pb_fh_stored_t;
 
@@ -309,24 +345,42 @@ typedef struct {
     int32_t ptc_rise_dc;          // last measured rises, tenths of a degree
     int32_t ch_rise_dc;
     uint32_t on_ms;               // ON time of the open or last window
-    bool enforced;                // false on CONFIG_PB_DEVBOARD_SAFE: report only
+    uint32_t restarts;            // windows closed without a result this boot
+    uint32_t skipped;             // relay-on edges with a warm element (no window)
+    bool enforced;                // false: report only (dev board or REPORT_ONLY)
 } pb_heater_first_heat_t;
 
 // Pure decision of the first-heat check, inline for host tests.
 typedef enum {
-    PB_FH_EVAL_WAIT = 0, PB_FH_EVAL_PASS, PB_FH_EVAL_CROSSED, PB_FH_EVAL_NO_RISE,
+    PB_FH_EVAL_WAIT = 0, PB_FH_EVAL_PASS, PB_FH_EVAL_WRONG_ROLES, PB_FH_EVAL_NO_RISE,
     PB_FH_EVAL_UNCERTAIN,
 } pb_fh_eval_t;
-static inline pb_fh_eval_t pb_heater_first_heat_eval(uint32_t on_ms, int32_t ptc_rise_dc,
-                                                     int32_t ch_rise_dc)
+static inline pb_fh_eval_t pb_heater_first_heat_eval(uint32_t on_ms, uint32_t wall_ms,
+                                                     int32_t ptc_rise_dc, int32_t ch_rise_dc)
 {
     if (on_ms < PB_FH_MIN_ON_MS) return PB_FH_EVAL_WAIT;
     if (ptc_rise_dc >= PB_FH_PASS_RISE_DC && ptc_rise_dc > 2 * ch_rise_dc) return PB_FH_EVAL_PASS;
+    if (wall_ms > PB_FH_FAIL_WALL_MS) return PB_FH_EVAL_WAIT;   // low duty: no failed result
+    bool roles = ch_rise_dc >= 2 * ptc_rise_dc + PB_FH_ROLES_MARGIN_DC;
+    if (roles && ch_rise_dc >= PB_FH_ROLES_EARLY_DC) return PB_FH_EVAL_WRONG_ROLES;
     if (on_ms < PB_FH_MAX_ON_MS) return PB_FH_EVAL_WAIT;
-    if (ptc_rise_dc >= PB_FH_PASS_RISE_DC) return PB_FH_EVAL_UNCERTAIN;
-    if (ch_rise_dc >= PB_FH_CROSS_RISE_DC && ch_rise_dc >= ptc_rise_dc + PB_FH_CROSS_MARGIN_DC)
-        return PB_FH_EVAL_CROSSED;
-    return PB_FH_EVAL_NO_RISE;
+    if (roles) return PB_FH_EVAL_WRONG_ROLES;
+    if (ptc_rise_dc < PB_FH_NO_RISE_DC) return PB_FH_EVAL_NO_RISE;
+    return PB_FH_EVAL_UNCERTAIN;
+}
+
+// True if the start readings (tenths) show an element that is already warm.
+static inline bool pb_heater_first_heat_warm(int32_t ptc_dc, int32_t ch_dc)
+{
+    return ptc_dc >= PB_FH_HOT_START_DC || ptc_dc - ch_dc >= PB_FH_WARM_START_DC;
+}
+
+// Median of three (the start reading of a window).
+static inline int32_t pb_heater_median3(int32_t a, int32_t b, int32_t c)
+{
+    if (a > b) { int32_t t = a; a = b; b = t; }
+    if (b > c) b = c;
+    return a > b ? a : b;
 }
 
 // Temperature in C to integer tenths, rounded half away from zero and clamped

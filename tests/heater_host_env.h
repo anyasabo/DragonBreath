@@ -63,6 +63,8 @@ typedef struct {
     int sem_held;
     bool sem_contended;          // a zero-wait take fails (another task holds it)
     void (*after_give_hook)(void);   // one-shot: runs after the next mutex give
+    void (*nvs_set_hook)(const char *key);   // runs before each nvs_set_* (test checks)
+    void (*ntc_read_hook)(void);     // one-shot: runs in the next PTC read (tick test)
 
     // NVS ("app_nvs" is the only namespace the code under test uses). Like ESP-IDF
     // v5.3, each nvs_set_* writes through to flash at once. nvs_commit() writes

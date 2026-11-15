@@ -324,7 +324,8 @@ serves both boards. Details + derivation:
 Requires ESP-IDF v5.3.2 or newer. ESP-IDF v5.3.1 has a known asynchronous
 HTTP-request socket ownership defect that can corrupt concurrent responses;
 [Espressif fixed it in `8b559ce`](https://github.com/espressif/esp-idf/commit/8b559ce6145474f01fcbb8763604e6b8769ba84e).
-DragonBreath's CI and release builds use v5.3.5.
+DragonBreath's CI and release builds read the ESP-IDF version from
+[`.idf-version`](.idf-version). Use the same version for local builds.
 
 ```bash
 git clone https://github.com/plastikman/DragonBreath

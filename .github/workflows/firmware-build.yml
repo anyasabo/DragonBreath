@@ -14,6 +14,7 @@ on:
       - 'sdkconfig.debug-*'
       - 'tools/hil.py'
       - 'tools/idf-build.sh'
+      - '.idf-version'
       - '.github/workflows/firmware-build.yml'
   pull_request:
     paths:
@@ -27,6 +28,7 @@ on:
       - 'sdkconfig.debug-*'
       - 'tools/hil.py'
       - 'tools/idf-build.sh'
+      - '.idf-version'
   workflow_dispatch:
 
 # Least-privilege GITHUB_TOKEN: the build only needs to read code and upload
@@ -130,6 +132,57 @@ jobs:
       # SHA-pinned (supply-chain); trailing comment tracks the human version.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Read ESP-IDF version
+        run: |
+          v="$(tr -d '[:space:]' < .idf-version)"
+          if ! printf '%s\n' "$v" | grep -Eq '^v[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::error file=.idf-version::'$v' is not an ESP-IDF tag (vX.Y or vX.Y.Z)"
+            exit 1
+          fi
+          echo "IDF_VERSION=$v" >> "$GITHUB_ENV"
+
+      # ccache for the ESP-IDF builds. The espressif/idf image has ccache and sets
+      # IDF_CCACHE_ENABLE=1. The esp-idf-ci-action container mounts the
+      # workspace, so CCACHE_DIR in the workspace survives the container. Each run
+      # saves a new cache and restores the newest one for the same ESP-IDF version.
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-${{ env.IDF_VERSION }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.IDF_VERSION }}-
+
+      - name: Test authoritative policy state machine
+        run: sh tests/run_policy_host_test.sh
+
+      - name: Test front-panel button state machine
+        run: sh tests/run_buttons_host_test.sh
+
+      - name: Test sensor-calibration safety clamp (set + NVS-load bound)
+        run: sh tests/run_ntc_calibration_host_test.sh
+
+      - name: Test NTC sample classifier (open / short / rail fail-status)
+        run: sh tests/run_ntc_status_host_test.sh
+
+      - name: Test persistent fault-latch boot restore (fail-safe)
+        run: sh tests/run_heater_fault_host_test.sh
+
+      - name: Test heater safety-trip decision (over-temp / fail-closed / watchdog)
+        run: sh tests/run_heater_safety_host_test.sh
+
+      - name: Test zero-cross duplicate-edge filter
+        run: sh tests/run_fan_zc_host_test.sh
+
+      - name: Test chamber dc_pid integration and safety hold
+        run: sh tests/run_heater_pid_host_test.sh
+
+      - name: Test MQTT-Klipper arming state machine (retained-aware arm/heartbeat)
+        run: sh tests/run_db_klipper_mqtt_host_test.sh
+
+      - name: Test portal config validation and change planning
+        run: sh tests/run_db_portal_config_host_test.sh
+
       - name: Test HIL scenario runner
         run: python3 -m unittest tests/test_hil_runner.py
 
@@ -168,23 +221,30 @@ jobs:
       # there is no committed lock to drift. The ESP-IDF build step re-solves and
       # validates the managed-component dependencies against the pinned manifests
       # (components/*/idf_component.yml) on every run, which is the validation.
-      - name: Build (ESP-IDF v5.3.5)
+      - name: Build (ESP-IDF ${{ env.IDF_VERSION }})
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
-          esp_idf_version: v5.3.5
+          esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
+          extra_docker_args: >-
+            -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
+          command: ccache --zero-stats && idf.py build
 
       - name: Check API v2 contract and shared dashboard ownership
         run: |
           sh tests/check_api_v2_contract.sh
 
-      - name: Build safe dev-board HIL profile (ESP-IDF v5.3.5)
+      - name: Build safe dev-board HIL profile (ESP-IDF ${{ env.IDF_VERSION }})
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
-          esp_idf_version: v5.3.5
+          esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
+          extra_docker_args: >-
+            -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
           command: |
             set -e   # a failed idf.py must fail the step, not be masked by the next command
             idf.py -B build-hil-devboard \
@@ -198,12 +258,15 @@ jobs:
               build
             sh tests/check_hil_compileout.sh build-hil-devboard-uart
 
-      - name: Build native-USB production-network debug profile (ESP-IDF v5.3.5)
+      - name: Build native-USB production-network debug profile (ESP-IDF ${{ env.IDF_VERSION }})
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
-          esp_idf_version: v5.3.5
+          esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
+          extra_docker_args: >-
+            -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
           command: |
             set -e
             idf.py -B build-debug-devboard-native \
@@ -211,6 +274,7 @@ jobs:
               -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.debug-devboard-native" \
               build
             sh tests/check_devboard_compileout.sh build-debug-devboard-native
+            ccache --show-stats   # hit rate of all builds in this job
 
       # Report only: DB_EXTRA_WARNINGS adds -Wdouble-promotion, -Wshadow, -Wformat=2,
       # -Wundef and -Wstrict-prototypes as warnings, not errors. The job summary shows
@@ -219,9 +283,12 @@ jobs:
         continue-on-error: true
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
-          esp_idf_version: v5.3.5
+          esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
+          extra_docker_args: >-
+            -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
           command: |
             set -eo pipefail
             idf.py -B build-extra-warnings \

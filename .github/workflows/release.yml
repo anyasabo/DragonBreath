@@ -25,6 +25,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Read ESP-IDF version
+        run: |
+          v="$(tr -d '[:space:]' < .idf-version)"
+          if ! printf '%s\n' "$v" | grep -Eq '^v[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::error file=.idf-version::'$v' is not an ESP-IDF tag (vX.Y or vX.Y.Z)"
+            exit 1
+          fi
+          echo "IDF_VERSION=$v" >> "$GITHUB_ENV"
+
       - name: Determine version
         id: ver
         run: |
@@ -38,10 +47,10 @@ jobs:
       - name: Run host tests
         run: sh tests/run_host_tests.sh
 
-      - name: Build (ESP-IDF v5.3.5)
+      - name: Build (ESP-IDF ${{ env.IDF_VERSION }})
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
-          esp_idf_version: v5.3.5
+          esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
           # Release builds layer sdkconfig.release on top of the defaults to enable
@@ -53,7 +62,6 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           SOURCE_SHA: ${{ github.sha }}
-          IDF_VERSION: v5.3.5
         run: |
           # esptool for the merged factory image (script falls back to python -m esptool)
           pipx install esptool >/dev/null 2>&1 \

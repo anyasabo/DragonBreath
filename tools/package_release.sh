@@ -108,7 +108,7 @@ print(json.dumps({
     "target":os.environ["TARGET"],"board":os.environ["BOARD"],
     "shared_core":{"source":"github.com/justinh-rahb/dragon-core","ref":os.environ["CORE_REF"],"license":"MIT","components":os.environ["CORE_COMPONENTS"].split(",")},
     "built_at_utc":os.environ["BUILT_AT"],
-    "note":"managed component versions in dependencies.lock (bundled)",
+    "note":"managed component versions are in dependencies.lock",
     "artifacts":arts,
 }, indent=2))
 PY

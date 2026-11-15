@@ -139,9 +139,9 @@ Supported range (the host tests assert that such a unit never latches):
 - Both thermistors agree within ±2 °C at the same temperature.
 
 Recovery from a false trip: build with `CONFIG_PB_FIRST_HEAT_REPORT_ONLY=y`
-(Kconfig, default `n`). The check then reports only. The option is inverted on
-purpose: a build that does not know the option enforces the check. It never latches and never
-stores a result. There is no runtime toggle. A safe dev-board build
+(Kconfig, default `n`). The check then reports only: it never latches and
+never stores a result. The option is inverted on purpose: a build that does not
+know the option enforces the check. There is no runtime toggle. A safe dev-board build
 (`CONFIG_PB_DEVBOARD_SAFE`, no mains, no element) also reports only.
 
 Limits of the check:
@@ -154,6 +154,18 @@ Limits of the check:
 - With crossed leads and outlet air that follows the element closely, the
   result can be "uncertain" instead of "wrong roles". The fixed 85 °C cutoff,
   which then watches the element, still trips.
+- **Known gap: a PTC sensor that came off the element and hangs in the outlet
+  air.** It reads about the same as the chamber, so each heat gives
+  "uncertain". If it hangs nearer to the element than the chamber bead, it can
+  even give "pass": a pass needs only 3.0 °C in 12 s (0.25 °C/s), but a sensor
+  on the element rises 1.5–3 °C/s. In that case the 105 °C PTC cutoff and the
+  element foldback are blind. These layers still protect the user: the bonded
+  thermal cutoff (Layer 1), the PTC self-limit (Layer 2), the fixed 85 °C
+  chamber cutoff and the sensor open/short trips.
+  `first_heat.uncertain_streak` counts consecutive "uncertain" results, so a
+  repeated "uncertain" is visible. If it stays above 0 over many heats, check
+  the PTC sensor on the element. When real first-heat captures exist, raise the
+  pass rise to the expected rate (for example ≥ 10 °C at 12 s).
 - The stock firmware's `ntc_bit` key is read at boot and shown as a hint only.
 
 ## Front-panel panic-off (long-press)

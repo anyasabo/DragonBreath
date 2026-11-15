@@ -69,6 +69,7 @@ static int32_t     s_fh_ptc_rise, s_fh_ch_rise;
 static uint32_t    s_fh_cfg;                       // mapping fingerprint at the start
 static int64_t     s_fh_retry_us;
 static uint32_t    s_fh_restarts, s_fh_skipped;    // published counters (this boot)
+static uint32_t    s_fh_uncertain_streak;          // consecutive UNCERTAIN results (this boot)
 static bool        s_fh_store_warned;              // under the persist lock: log one failure only
 // Guarded by s_mux: the published snapshot, the re-run request and the NVS write
 // that is requested or pending (the tick retries it).
@@ -214,7 +215,7 @@ esp_err_t pb_heater_init(void)
     taskEXIT_CRITICAL(&s_mux);
     s_fh = PB_FH_IDLE;   // pb_heater_load_first_heat() restores a stored pass
     s_fh_nstart = 0;
-    s_fh_restarts = s_fh_skipped = 0;
+    s_fh_restarts = s_fh_skipped = s_fh_uncertain_streak = 0;
 #ifdef CONFIG_PB_DEVBOARD_SAFE
     ESP_LOGW(TAG, "safe dev-board backend: relay GPIO compiled out");
 #else
@@ -880,6 +881,7 @@ static void fh_publish(void)   // control task
                                                                : (uint32_t)(s_fh_on_us / 1000);
     s_fh_pub.restarts = s_fh_restarts;
     s_fh_pub.skipped = s_fh_skipped;
+    s_fh_pub.uncertain_streak = s_fh_uncertain_streak;
     taskEXIT_CRITICAL(&s_mux);
 }
 
@@ -992,6 +994,8 @@ static pb_fault_reason_t fh_step(float ptc_c, float ch_c, int64_t now)
         if (s_fh == PB_FH_ARMED && on_ms >= PB_FH_MIN_ON_MS) s_fh = PB_FH_EVAL;
         break;
     }
+    if (e == PB_FH_EVAL_UNCERTAIN) s_fh_uncertain_streak++;        // a repeat stays visible
+    else if (e != PB_FH_EVAL_WAIT) s_fh_uncertain_streak = 0;
     fh_publish();
     if (e == PB_FH_EVAL_WAIT) return PB_FAULT_NONE;
     ESP_LOGW(TAG, "first-heat: %s after %u ms ON: PTC rise %d dC, chamber rise %d dC%s",

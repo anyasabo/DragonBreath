@@ -347,6 +347,7 @@ typedef struct {
     uint32_t on_ms;               // ON time of the open or last window
     uint32_t restarts;            // windows closed without a result this boot
     uint32_t skipped;             // relay-on edges with a warm element (no window)
+    uint32_t uncertain_streak;    // consecutive UNCERTAIN results this boot (0 after another result)
     bool enforced;                // false: report only (dev board or REPORT_ONLY)
 } pb_heater_first_heat_t;
 

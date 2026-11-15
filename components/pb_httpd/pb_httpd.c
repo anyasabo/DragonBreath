@@ -278,6 +278,7 @@ static cJSON *state_json(const pb_policy_snapshot_t *s)
     cJSON_AddStringToObject(first_heat, "stock_hint", pb_heater_first_heat_stock_str(fh.stock_hint));
     cJSON_AddNumberToObject(first_heat, "restarts", fh.restarts);
     cJSON_AddNumberToObject(first_heat, "skipped", fh.skipped);
+    cJSON_AddNumberToObject(first_heat, "uncertain_streak", fh.uncertain_streak);
     cJSON_AddBoolToObject(first_heat, "enforced", fh.enforced);
     // A "wrong_roles" result has two causes. Only one of them is fixed by a swap.
     if (fh.stored == PB_FH_STORED_WRONG_ROLES)

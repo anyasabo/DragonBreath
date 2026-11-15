@@ -115,6 +115,7 @@ The complete snapshot, not locally remembered intent, is the source of truth:
     "stock_hint": "none",
     "restarts": 0,
     "skipped": 0,
+    "uncertain_streak": 0,
     "enforced": true,
     "advice": null
   },
@@ -141,6 +142,9 @@ that it was measured with. `stock_hint` is the stock firmware's `ntc_bit` key:
 `restarts` counts the windows of this boot that closed without a result (too
 little ON time, or an offset change). `skipped` counts the relay-on edges of
 this boot with an element that was already warm (no window).
+`uncertain_streak` counts the consecutive `uncertain` results of this boot.
+Another result sets it to 0. A value that stays above 0 over many heats can
+mean a PTC sensor that is not on the element (see `docs/SAFETY.md`).
 `enforced` is `false` on a safe dev-board build and on a build with
 `CONFIG_PB_FIRST_HEAT_REPORT_ONLY=y`: the check then reports only and never latches.
 A `wrong_roles` or `no_rise` result latches the heater off with the

@@ -130,6 +130,7 @@ typedef struct {
     int fh_nstart;                 // start readings taken (median of three)
     int32_t fh_pfirst[2], fh_cfirst[2];
     long fh_restarts, fh_skipped;  // this boot, like the firmware counters
+    long fh_streak;                // consecutive UNCERTAIN results this boot
     bool fh_req_tick;              // a result write was requested in this tick
     bool fh_clean;                 // no plant or sensor change since the open
     bool fh_supported;             // the plant is in the supported range at the open
@@ -377,6 +378,7 @@ static bool plant_supported(void)
 //   - a dead element, a detached PTC thermistor or crossed leads never PASS.
 static void fh_result(int state)
 {
+    W->fh_streak = state == PB_FH_UNCERTAIN ? W->fh_streak + 1 : 0;
     if (!W->fh_clean) return;
     if (W->fh_plant_at_open == PLANT_NORMAL && W->fh_supported) {
         W->fh_clean_normal++;
@@ -478,6 +480,8 @@ static void check_first_heat(void)
     if (fh_open())
         RCHECK((int64_t)f.on_ms == W->fh_on_us / 1000, "first-heat ON time %u ms, oracle %lld ms",
                (unsigned)f.on_ms, (long long)(W->fh_on_us / 1000));
+    RCHECK((long)f.uncertain_streak == W->fh_streak, "first-heat uncertain streak %u, oracle %ld",
+           (unsigned)f.uncertain_streak, W->fh_streak);
     RCHECK((long)f.restarts == W->fh_restarts && (long)f.skipped == W->fh_skipped,
            "first-heat restarts/skipped %u/%u, oracle %ld/%ld", (unsigned)f.restarts,
            (unsigned)f.skipped, W->fh_restarts, W->fh_skipped);
@@ -1044,7 +1048,7 @@ static void oracle_boot(void)
     W->fh_prise = W->fh_crise = 0;
     W->fh_on_us = 0;
     W->fh_pending = false;         // a write that did not land before the reboot is lost
-    W->fh_restarts = W->fh_skipped = 0;
+    W->fh_restarts = W->fh_skipped = W->fh_streak = 0;
     W->fh_nstart = 0;
     if (!env->nvs_fail_open_ro && env->nvs_ns_exists && !env->nvs_fail_get &&
         env_nvs_read("fh_state", &v) && v >= 1 && v <= 3) {

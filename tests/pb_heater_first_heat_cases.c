@@ -245,12 +245,21 @@ static void t_fh_both_rise_uncertain(void)
     CHECK(fh().stored == PB_FH_STORED_UNKNOWN && nvs_u("fh_state") == -1);
     for (int i = 0; i < 10; ++i) { step(0.0f, 0.0f); CHECK(relay() == 1); }
     CHECK(fh().state == PB_FH_UNCERTAIN);
-    // The next heat checks again.
+    CHECK(fh().uncertain_streak == 1);
+    // The next heat checks again. A repeated UNCERTAIN counts up; another
+    // result sets the streak to 0.
     CHECK(set_target(0.0f) == ESP_OK);
     tick();
     CHECK(fh().state == PB_FH_IDLE);
-    start(25.0f, 25.0f, 50.0f);
+    start(25.0f, 25.0f, 70.0f);
     CHECK(fh().state == PB_FH_ARMED);
+    run_window(0.5f, 0.4f, 100);
+    CHECK(fh().state == PB_FH_UNCERTAIN && fh().uncertain_streak == 2);
+    CHECK(set_target(0.0f) == ESP_OK);
+    tick();
+    start(25.0f, 25.0f, 50.0f);
+    run_window(0.1f, 1.0f, 100);
+    CHECK(fh().state == PB_FH_PASS && fh().uncertain_streak == 0);
 }
 
 static void t_fh_small_ptc_lead_uncertain(void)

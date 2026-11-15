@@ -1,0 +1,50 @@
+menu "DragonBreath HTTP API security"
+
+    config DB_REQUIRE_CONTROL_TOKEN
+        bool "Require a control token for LAN control and OTA"
+        default n
+        help
+            If n (default), a device with no control token accepts any non-empty
+            X-DragonBreath-Auth header (a CSRF gate only).
+
+            If y, a device with no control token refuses the mutating API routes
+            and OTA with HTTP 403 token_required. One exception: a request
+            that arrives on the setup AP address while the Wi-Fi station is
+            not associated (first setup, or a failed join) gets the CSRF gate
+            only. Set the first token there: the setup form "Control token"
+            field, or POST /api/v2/token. A stored token cannot be cleared.
+            A person in radio range with the setup AP password can also set
+            the first token, so change the AP password.
+
+    config DB_AUTH_LOCKOUT
+        bool "Lock out auth after repeated wrong tokens"
+        default n
+        help
+            If y, after DB_AUTH_LOCKOUT_MAX_FAILS wrong tokens inside
+            DB_AUTH_LOCKOUT_WINDOW_S seconds, every auth check fails for
+            DB_AUTH_LOCKOUT_DURATION_S seconds (HTTP 429 auth_locked on API v2
+            routes, HTTP 403 on the shared portal routes). The
+            limit is global and RAM-only. It counts only a wrong token, not
+            a missing header. During a lockout, legitimate clients also fail,
+            so a remote heat lease can expire and the heater turns off.
+            Front-panel buttons and the control loop are not affected.
+
+    config DB_AUTH_LOCKOUT_MAX_FAILS
+        int "Wrong tokens before a lockout"
+        depends on DB_AUTH_LOCKOUT
+        range 3 100
+        default 10
+
+    config DB_AUTH_LOCKOUT_WINDOW_S
+        int "Window for counting wrong tokens (s)"
+        depends on DB_AUTH_LOCKOUT
+        range 10 3600
+        default 60
+
+    config DB_AUTH_LOCKOUT_DURATION_S
+        int "Lockout duration (s)"
+        depends on DB_AUTH_LOCKOUT
+        range 5 3600
+        default 60
+
+endmenu

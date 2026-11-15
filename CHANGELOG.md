@@ -57,6 +57,27 @@ below into the GitHub Release notes.
 - Builds use ESP-IDF v5.3.6 (was v5.3.5). It fixes an out-of-bounds read in the
   lwIP DHCP server that the setup access point uses. A crafted DHCP packet can
   crash the device.
+- The control-token check now uses a constant-time compare. The time of a
+  wrong guess no longer shows how many leading characters were correct.
+- New build option `CONFIG_DB_AUTH_LOCKOUT` (default off). If on, after 10
+  wrong tokens in 60 s, every auth check fails for 60 s (HTTP 429
+  `auth_locked`). The device logs one warning for each lockout. The limit is
+  global and in RAM only. Front-panel buttons and the control loop are not
+  affected.
+- New build option `CONFIG_DB_REQUIRE_CONTROL_TOKEN` (default off). If on and
+  no control token is set, the device refuses LAN control, settings and OTA.
+  Only a setup AP client can use the device while the station is not
+  associated.
+  The API v2 routes return HTTP 403 `token_required`. Set the first token from
+  the setup AP: a "Control token" field in the setup form, or
+  `POST /api/v2/token`. A stored token cannot be
+  cleared in this build. See README "Security".
+- `GET /api/v2/console` returns the same JSON error body as the other
+  auth-gated routes.
+- `POST /api/v2/presets` and `POST /api/v2/bambu/scan` now require the
+  `X-DragonBreath-Auth` header, like the other mutating routes. This stops a CSRF
+  change of the presets from a web page.
+- `POST /api/v2/token` accepts only 1-64 printable ASCII characters (0x21-0x7E).
 
 ## [1.1.19] - 2026-09-23
 

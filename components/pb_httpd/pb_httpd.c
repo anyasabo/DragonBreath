@@ -276,7 +276,16 @@ static cJSON *state_json(const pb_policy_snapshot_t *s)
     cJSON_AddNumberToObject(first_heat, "on_ms", fh.on_ms);
     cJSON_AddStringToObject(first_heat, "stored", pb_heater_first_heat_stored_str(fh.stored));
     cJSON_AddStringToObject(first_heat, "stock_hint", pb_heater_first_heat_stock_str(fh.stock_hint));
+    cJSON_AddNumberToObject(first_heat, "restarts", fh.restarts);
+    cJSON_AddNumberToObject(first_heat, "skipped", fh.skipped);
     cJSON_AddBoolToObject(first_heat, "enforced", fh.enforced);
+    // A "wrong_roles" result has two causes. Only one of them is fixed by a swap.
+    if (fh.stored == PB_FH_STORED_WRONG_ROLES)
+        cJSON_AddStringToObject(first_heat, "advice",
+            "Check the plugs first. Apply the swap only if the chamber and PTC plugs are "
+            "crossed. If the PTC sensor is loose or not on the element, repair it instead.");
+    else
+        cJSON_AddNullToObject(first_heat, "advice");
 
     cJSON *safety = cJSON_AddObjectToObject(o, "safety");
     cJSON_AddBoolToObject(safety, "fault_latched", s->fault_latched);
@@ -921,9 +930,10 @@ static esp_err_t settings_post(httpd_req_t *req)
                              "could not save thermistor mapping", NULL);
         applied = true;
     }
-    // First-heat actions. apply_swap stages the swap that a stored "crossed"
-    // result suggests (it applies after a reboot, like swap_thermistors). The
-    // firmware never applies it by itself.
+    // First-heat actions. apply_swap stages the swap for a stored "wrong_roles"
+    // result (it applies after a reboot, like swap_thermistors). The swap is right
+    // only if the plugs are crossed: the result can also mean a PTC sensor that is
+    // not on the element (see first_heat.advice). The firmware never swaps itself.
     if (httpd_query_key_value(q, "first_heat_apply_swap", v, sizeof v) == ESP_OK) {
         uint32_t on;
         if (!parse_u32(v, &on) || on != 1) {
@@ -932,9 +942,9 @@ static esp_err_t settings_post(httpd_req_t *req)
         }
         pb_heater_first_heat_t fh;
         pb_heater_get_first_heat(&fh);
-        if (fh.stored != PB_FH_STORED_CROSSED)
+        if (fh.stored != PB_FH_STORED_WRONG_ROLES)
             return api_error(req, "409 Conflict", "invalid_command",
-                             "no stored first-heat result suggests a swap", NULL);
+                             "no stored first-heat wrong_roles result", NULL);
         if (pb_ntc_set_swap_thermistors(!pb_ntc_get_swap_thermistors_active()) != ESP_OK)
             return api_error(req, "500 Internal Server Error", "persist_failed",
                              "could not save thermistor mapping", NULL);

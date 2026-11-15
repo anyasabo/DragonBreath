@@ -54,7 +54,9 @@ class MockDevice:
         self.down_until = 0.0
         self.broken_watchdog = False   # a firmware that never trips
         self.relay_stuck = False       # a relay that stays on after OFF
-        self.break_next_off = False    # apply OFF, then cut the response
+        self.cut_next = set()          # apply these commands, then cut the response
+        self.garbage_state = 0         # this many GET /state answers are a 200 with an HTML body
+        self.owner = None
         self.settings_fail_after = None
         self.panic_after = None        # seconds after relay on, then a button panic-off
         self.on_since = 0.0
@@ -77,7 +79,7 @@ class MockDevice:
                 "ptc": {"temperature_c": 30.0, "status": "ok"},
             },
             "control": {"lease": {"active": self.lease_active(),
-                                  "owner": "smoke-test" if self.lease_active() else None,
+                                  "owner": self.owner if self.lease_active() else None,
                                   "expires_in_ms": 0}},
             "safety": {"fault_latched": self.fault, "inhibited": self.inhibited, "reason": self.reason},
         }
@@ -162,6 +164,7 @@ class MockDevice:
             self.resume_mode = "auto" if self.mode == "auto" else "off"
             self.mode, self.source, self.target = "power_on", actor["kind"], float(cmd["target_c"])
             self.lease = lease = uuid.uuid4().hex
+            self.owner = actor["id"]
             self.deadline = time.monotonic() + self.comms_ms / 1000
             self.rev += 1
             self.wake.set()
@@ -220,6 +223,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         with dev.lock:
             if self.path == "/api/v2/state":
+                if dev.garbage_state > 0:
+                    dev.garbage_state -= 1
+                    return self.send(200, "<html>busy</html>", "text/html")
                 return self.send(200, dev.snapshot())
             if self.path == "/api/v2/health":
                 return self.send(200, {"api_version": 2, "boot_id": dev.boot_id, "uptime_ms": 12500,
@@ -247,8 +253,9 @@ class Handler(BaseHTTPRequestHandler):
         with dev.lock:
             if url.path == "/api/v2/command":
                 status, out = dev.command(json.loads(raw or b"{}"))
-                if dev.commands and dev.commands[-1] == "off" and dev.break_next_off:
-                    dev.break_next_off, cut = False, True
+                if dev.commands and dev.commands[-1] in dev.cut_next:
+                    dev.cut_next.discard(dev.commands[-1])
+                    cut = True
             elif url.path == "/api/v2/heartbeat":
                 status, out = dev.heartbeat(json.loads(raw or b"{}"))
             elif url.path == "/settings":
@@ -421,7 +428,7 @@ class SmokeTest(unittest.TestCase):
             smoke.parse_args(["host", "--target", "55"])
 
     def test_network_error_mid_off_recovers(self):
-        self.dev.break_next_off = True
+        self.dev.cut_next = {"off"}
         code, out = self.run_tool("--steps", "2")
         self.assertEqual(code, 0, out)
         self.assertGreaterEqual(self.dev.commands.count("off"), 2)
@@ -475,16 +482,134 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("could not save to NVS", out)
 
-    def test_sigterm_while_heating_sends_off(self):
-        def term():
-            os.kill(os.getpid(), signal.SIGTERM)
-            time.sleep(2)
-        with mock.patch.object(smoke.Smoke, "wait_relay_on", side_effect=term):
+    def test_sigterm_and_sighup_while_heating_send_off(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(sig=sig.name):
+                before = signal.getsignal(sig)
+
+                def kill(sig=sig):
+                    os.kill(os.getpid(), sig)
+                    time.sleep(2)
+                with mock.patch.object(smoke.Smoke, "wait_relay_on", side_effect=kill):
+                    code, out = self.run_tool("--steps", "2")
+                self.assertEqual(code, 1)
+                self.assertIn("interrupted", out)
+                self.assertEqual(self.dev.commands[-1], "off")
+                self.assertEqual(signal.getsignal(sig), before)
+                self.assert_safe_end()
+
+    # ---- interrupts and broken answers on the paths that must end with OFF ----
+
+    def patch_command(self, on_power_on):
+        """Run on_power_on(original, client, args, kwargs) in place of the power_on request."""
+        original = smoke.Client.command
+
+        def command(client, name, *args, **kwargs):
+            if name == "power_on":
+                return on_power_on(original, client, (name, *args), kwargs)
+            return original(client, name, *args, **kwargs)
+        return mock.patch.object(smoke.Client, "command", autospec=True, side_effect=command)
+
+    def interrupt_first_cleanup_off(self):
+        original, calls = smoke.Smoke.off_and_verify, []
+
+        def off_and_verify(s, window):
+            calls.append(window)
+            if len(calls) == 1:
+                raise KeyboardInterrupt
+            return original(s, window)
+        return mock.patch.object(smoke.Smoke, "off_and_verify", autospec=True, side_effect=off_and_verify)
+
+    def test_ctrl_c_after_power_on_is_sent_sends_off(self):
+        def sent_then_interrupt(original, client, args, kwargs):
+            original(client, *args, **kwargs)
+            raise KeyboardInterrupt
+        with self.patch_command(sent_then_interrupt):
+            code, out = self.run_tool("--steps", "2")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.dev.commands, ["power_on", "off"])
+        self.assertNotIn("mains", out)
+        self.assert_safe_end()
+
+    def test_no_answer_to_power_on_sends_off(self):
+        self.dev.cut_next = {"power_on"}
+        code, out = self.run_tool("--steps", "2")
+        self.assertEqual(code, 1)
+        self.assertIn("no answer to power_on", out)
+        self.assertEqual(self.dev.commands, ["power_on", "off"])
+        self.assert_safe_end()
+
+    def test_unknown_power_on_does_not_stop_another_controller(self):
+        def other_takes_over(original, client, args, kwargs):
+            with self.dev.lock:   # Klipper takes the heater; our request is lost
+                self.dev.command({"api_version": 2, "request_id": "k1", "expected_revision": self.dev.rev,
+                                  "actor": {"kind": "klipper", "id": "u1-klippy"},
+                                  "command": {"name": "power_on", "target_c": 45}})
+            raise smoke.NetError("timed out")
+        with self.patch_command(other_takes_over):
+            code, out = self.run_tool("--steps", "2")
+        self.assertEqual(code, 1)
+        self.assertIn("Another controller has the heater", out)
+        self.assertNotIn("off", self.dev.commands)
+        self.assertEqual((self.dev.mode, self.dev.owner), ("power_on", "u1-klippy"))
+
+    def test_ctrl_c_during_cleanup_off_still_ends_off(self):
+        with mock.patch.object(smoke.Smoke, "wait_relay_on", side_effect=smoke.Fail("test")), \
+                self.interrupt_first_cleanup_off():
             code, out = self.run_tool("--steps", "2")
         self.assertEqual(code, 1)
         self.assertIn("interrupted", out)
-        self.assertEqual(self.dev.commands[-1], "off")
-        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
+        self.assertNotIn("mains", out)
+        self.assert_safe_end()
+
+    def test_interrupt_in_step3_restores_comms_ms(self):
+        with mock.patch.object(smoke.Smoke, "wait_relay_on", side_effect=KeyboardInterrupt):
+            code, out = self.run_tool("--steps", "3")
+        self.assertEqual(code, 1)
+        self.assertIn("comms_ms restored to 300000", out)
+        self.assert_safe_end()
+
+    def test_interrupt_during_step3_off_still_restores_comms_ms(self):
+        with mock.patch.object(smoke.Smoke, "wait_relay_on", side_effect=smoke.Fail("test")), \
+                self.interrupt_first_cleanup_off():
+            code, out = self.run_tool("--steps", "3")
+        self.assertEqual(code, 1)
+        self.assertIn("comms_ms restored to 300000", out)
+        self.assert_safe_end()
+
+    def test_malformed_state_answers_are_retried(self):
+        def garbage_then_fail():
+            self.dev.garbage_state = 4
+            raise smoke.Fail("test")
+        with mock.patch.object(smoke.Smoke, "wait_relay_on", side_effect=garbage_then_fail):
+            code, out = self.run_tool("--steps", "2")
+        self.assertEqual(code, 1)
+        self.assertNotIn("mains", out)
+        self.assertIn("RESULT: FAIL", out)
+        self.assert_safe_end()
+
+    def test_malformed_state_forever_warns_and_prints_summary(self):
+        def garbage_forever():
+            self.dev.garbage_state = 10**6
+            raise smoke.Fail("test")
+        with mock.patch.object(smoke.Smoke, "wait_relay_on", side_effect=garbage_forever):
+            code, out = self.run_tool("--steps", "2", "--off-verify", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("Switch the heater off at the mains NOW", out)
+        self.assertIn("could not read the state", out)
+        self.assertIn("== Summary ==", out)
+
+    def test_reboot_while_heating_ends_off(self):
+        original = smoke.Smoke.wait_relay_on
+
+        def on_then_reboot(s):
+            original(s)
+            self.dev.reboot()
+        with mock.patch.object(smoke.Smoke, "wait_relay_on", autospec=True, side_effect=on_then_reboot):
+            code, out = self.run_tool("--steps", "2")
+        self.assertEqual(code, 1)
+        self.assertNotIn("mains", out)
+        self.assertIn("== Summary ==", out)
         self.assert_safe_end()
 
 

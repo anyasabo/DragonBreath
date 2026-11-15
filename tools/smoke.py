@@ -176,6 +176,7 @@ class Smoke:
         self.lease, self.next_beat, self.beat_period = None, 0.0, 2.0
         self.beats, self.last_beat = 0, None
         self.trip_latched = False   # this run latched a lease/link trip (step 3)
+        self.restore_pending = None # comms_ms value to restore, set before the change is sent
         self.results = []           # (label, PASS/FAIL/SKIP, note, action)
 
     def add(self, label, status, note, action=None):
@@ -220,8 +221,11 @@ class Smoke:
             except (OSError, Fail):
                 pass
             else:
-                if cond(st):
-                    return st, time.monotonic() - t0
+                try:
+                    if cond(st):
+                        return st, time.monotonic() - t0
+                except (KeyError, TypeError, AttributeError):
+                    st = None       # a malformed answer counts as no answer
             if time.monotonic() - t0 > timeout:
                 return st, None
             time.sleep(period)
@@ -246,18 +250,44 @@ class Smoke:
         self.armed = False
         return st, time.monotonic() - t0
 
+    def other_controller(self):
+        """Return a description if another controller has the heater now, else None. Never raises."""
+        try:
+            st = self.c.state()
+            owner, mode, source = st["control"]["lease"].get("owner"), st["mode"], st["source"]
+        except (OSError, Fail, KeyError, TypeError, AttributeError):
+            return None             # no usable answer: send OFF as usual
+        ours = owner == ACTOR["id"] or (   # or our lease ran out, but POWER_ON from web still runs
+            owner is None and source == ACTOR["kind"] and mode == "power_on")
+        if mode != "off" and not ours:
+            return f"mode {mode}, source {source}, lease owner {owner}"
+        return None
+
+    def mains_warning(self, seen):
+        self.alarmed = True
+        print("\n!!! The heater did not confirm OFF. Switch the heater off at the mains NOW. !!!")
+        self.add("OFF check", "FAIL", f"OFF not confirmed ({seen})",
+                 "Switch the heater off at the mains NOW. " + ROLLBACK)
+
     def safe_off(self):
         """Used on each exit path while armed. Never raises."""
         if not self.armed or self.alarmed:
             return
+        other = self.other_controller()
+        if other:
+            self.armed = False
+            print(f"\n!!! Another controller has the heater ({other}). The tool does not send OFF. "
+                  "Watch the heater. Stop it on that controller, or at the mains. !!!")
+            self.add("OFF check", "FAIL", f"OFF not sent: another controller has the heater ({other})",
+                     "Watch the heater. Stop it on that controller, or at the mains.")
+            return
         st, dt = self.off_and_verify(self.a.off_verify)
         if dt is None:
-            self.alarmed = True
-            seen = (f"relay on={st['heater']['output']}, mode={st['mode']}" if st
-                    else "the device does not answer")
-            print("\n!!! The heater did not confirm OFF. Switch the heater off at the mains NOW. !!!")
-            self.add("OFF check", "FAIL", f"OFF not confirmed in {self.a.off_verify:.0f} s ({seen})",
-                     "Switch the heater off at the mains NOW. " + ROLLBACK)
+            try:
+                seen = f"relay on={st['heater']['output']}, mode={st['mode']}"
+            except (KeyError, TypeError):
+                seen = "the device does not answer"
+            self.mains_warning(f"{seen} after {self.a.off_verify:.0f} s")
 
     # ---- heating session shared by steps 2, 3 and 5 ---------------------------
 
@@ -282,14 +312,24 @@ class Smoke:
         return st
 
     @contextlib.contextmanager
-    def heating(self, text, setup=None):
-        """precheck -> confirm -> [setup] -> POWER_ON at the precheck revision -> body -> OFF."""
+    def heating(self, text, setup=None, cleanup=None):
+        """precheck -> confirm -> [setup] -> POWER_ON at the precheck revision -> body -> OFF -> [cleanup].
+
+        cleanup runs in its own finally, also if setup or the OFF is interrupted."""
         st = self.precheck()
         self.confirm(text)
-        cleanup = None
+        try:
+            with self._power_on(st, setup) as on:
+                yield on
+        finally:
+            if cleanup:
+                cleanup()
+
+    @contextlib.contextmanager
+    def _power_on(self, st, setup):
         try:
             if setup:
-                cleanup = setup()
+                setup()
             self.armed = True       # from here, an unknown result can mean heat
             t_sent = time.monotonic()
             try:
@@ -313,8 +353,6 @@ class Smoke:
         finally:
             self.lease = None
             self.safe_off()
-            if cleanup:
-                cleanup()
 
     def wait_relay_on(self):
         st, dt = self.poll(lambda s: s["heater"]["output"] or s["safety"]["fault_latched"]
@@ -396,16 +434,22 @@ class Smoke:
                 raise Fail(f"relay or mode not off {self.a.off_deadline:.1f} s after OFF")
             return f"relay off {dt:.2f} s after OFF"
 
-    def restore_comms(self, value):
+    def restore_comms(self):
+        """Restore comms_ms if a change is pending. Never raises, except on an interrupt."""
+        value = self.restore_pending
+        if value is None:
+            return
         for _ in range(3):
             try:
                 status, r = self.c.set_settings(comms_ms=value)
                 if status == 200 and r.get("comms_ms") == value:
+                    self.restore_pending = None
                     print(f"  comms_ms restored to {value}")
                     return
             except (OSError, Fail):
                 pass
             time.sleep(0.5)
+        self.restore_pending = None
         self.add("comms_ms restore", "FAIL", f"could not set comms_ms back to {value}",
                  f"Set comms_ms to {value} in the dashboard Safety settings.")
 
@@ -414,15 +458,15 @@ class Smoke:
         orig, ttl_ms = settings["comms_ms"], settings["comms_ms_min"]
 
         def setup():
+            self.restore_pending = orig      # registered before the change is sent
             status, r = self.c.set_settings(comms_ms=ttl_ms)
             if status != 200 or r.get("comms_ms") != ttl_ms:
                 raise Fail(f"could not set comms_ms={ttl_ms}: HTTP {status}")
-            return lambda: self.restore_comms(orig)
 
         with self.heating(f"Step 3 HEATS and CHANGES A SETTING: comms_ms {orig} -> {ttl_ms}, POWER_ON "
                           f"at {self.a.target:.0f} C, then stop the heartbeat. The watchdog must latch "
                           f"a fault in about {ttl_ms / 1000:.0f} s. The tool restores comms_ms={orig}.",
-                          setup) as on:
+                          setup, self.restore_comms) as on:
             ttl = on["ttl"]
             self.wait_relay_on()
             self.poll(lambda s: self.beats >= 1, 3 * self.beat_period)
@@ -564,12 +608,12 @@ def print_final_state(smoke):
     print("\n== Final device state ==")
     try:
         st = smoke.c.state()
-    except (OSError, Fail) as e:
-        print(f"  could not read the state ({e}). Look at the heater LEDs.")
+        saf = st["safety"]
+        print(f"  mode {st['mode']}  relay on={st['heater']['output']}  "
+              f"chamber {fmt_c(st['sensors']['chamber'])}  PTC {fmt_c(st['sensors']['ptc'])}")
+    except (OSError, Fail, KeyError, TypeError, AttributeError) as e:
+        print(f"  could not read the state ({type(e).__name__}: {e}). Look at the heater and its LEDs.")
         return
-    saf = st["safety"]
-    print(f"  mode {st['mode']}  relay on={st['heater']['output']}  "
-          f"chamber {fmt_c(st['sensors']['chamber'])}  PTC {fmt_c(st['sensors']['ptc'])}")
     if saf.get("fault_latched") or saf.get("inhibited"):
         print(f"  a fault stays latched: {saf.get('reason')}. Clear it on the dashboard when the cause is known.")
     else:
@@ -596,7 +640,16 @@ def main(argv=None, ask=input):
         try:
             smoke.safe_off()
         except KeyboardInterrupt:
-            print("!!! OFF was interrupted. Switch the heater off at the mains NOW. !!!")
+            smoke.mains_warning("the last OFF was interrupted")
+        except Exception as e:  # noqa: BLE001 - last line of defence: always warn and print the summary
+            smoke.mains_warning(f"the last OFF failed: {type(e).__name__}: {e}")
+        try:
+            smoke.restore_comms()
+        except (KeyboardInterrupt, Exception) as e:  # noqa: BLE001 - reported as a FAIL row below
+            print(f"  comms_ms restore stopped: {type(e).__name__}")
+        if smoke.restore_pending is not None:
+            smoke.add("comms_ms restore", "FAIL", "the restore was interrupted",
+                      f"Set comms_ms to {smoke.restore_pending} in the dashboard Safety settings.")
         for s, h in old.items():
             signal.signal(s, h)
     print_final_state(smoke)

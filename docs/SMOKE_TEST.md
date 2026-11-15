@@ -30,6 +30,13 @@ auth-gated, read-only `GET /api/v2/console`. A wrong token gives "wrong --token"
 - After the tool sends `power_on`, the tool is "armed". While it is armed, each
   exit path sends OFF and checks that the relay is off and the mode is `off`.
   This includes a failure, an exception, Ctrl-C, SIGTERM and SIGHUP.
+- Before this OFF, the tool reads the state. If another controller has the heater
+  now (the mode is not `off` and the lease is not from `smoke-test`), the tool
+  does not send OFF. It tells you to watch the heater and records a FAIL. If the
+  state does not come, the tool sends OFF.
+- Step 3 records the `comms_ms` restore before it changes the value. The restore
+  runs at the end of step 3, also after an interrupt. If it does not complete,
+  the summary has a FAIL row with the value to set.
 - If the relay and the mode are not off 3 s after OFF (`--off-verify`), the tool prints
   "Switch the heater off at the mains NOW" and records a FAIL.
 - Ctrl-C stops the run. The tool does not ask for the next step.

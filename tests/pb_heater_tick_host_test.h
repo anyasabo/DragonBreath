@@ -18,6 +18,11 @@ esp_err_t set_target(float c);
 void link_alive(void);
 esp_err_t clear_fault(void);
 int nvs_u(const char *key);      // committed NVS value, or -1 if absent
+extern bool g_fh_seed_pass;      // boot() stores a first-heat pass first (default true)
+uint32_t fh_cfg_expected(void);  // the first-heat mapping fingerprint for env
+
+// Directed first-heat tests (pb_heater_first_heat_cases.c). True if all pass.
+bool heater_first_heat_tests(void);
 
 // Randomized invariant test. Returns true if all seeds pass.
 bool heater_random_test(void);

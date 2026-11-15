@@ -228,6 +228,12 @@ void env_nvs_write(const char *key, host_nvs_type_t type, uint32_t value)
     env->nvs_ns_exists = true;
 }
 
+void env_nvs_write_blob(const char *key, uint32_t value, uint32_t len)
+{
+    env_nvs_write(key, HOST_NVS_BLOB, value);
+    store_find(key)->blob_len = len;
+}
+
 void env_nvs_erase(const char *key)
 {
     host_nvs_entry_t *e = store_find(key);
@@ -320,6 +326,22 @@ esp_err_t nvs_set_u32(nvs_handle_t h, const char *key, uint32_t v)
 esp_err_t nvs_set_i32(nvs_handle_t h, const char *key, int32_t v)
 {
     return nvs_set(h, key, HOST_NVS_I32, (uint32_t)v);
+}
+
+esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *len)
+{
+    ENV_REQUIRE(env->crit_depth == 0, "nvs_get inside a critical section");
+    ENV_REQUIRE(len != NULL, "nvs_get_blob without a length");
+    (void)handle_get(h);
+    if (env->nvs_fail_get) return env->nvs_fail_get;
+    host_nvs_entry_t *e = store_find(key);
+    if (!e || e->type != HOST_NVS_BLOB) return ESP_ERR_NVS_NOT_FOUND;
+    if (!out) { *len = e->blob_len; return ESP_OK; }
+    if (*len < e->blob_len) return ESP_ERR_NVS_INVALID_LENGTH;
+    unsigned char *b = out;
+    for (uint32_t i = 0; i < e->blob_len; ++i) b[i] = i < 4 ? (unsigned char)(e->value >> (8 * i)) : 0;
+    *len = e->blob_len;
+    return ESP_OK;
 }
 
 esp_err_t nvs_commit(nvs_handle_t h)

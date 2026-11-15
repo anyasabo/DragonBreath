@@ -19,6 +19,7 @@ trap 'rm -f "$out"' EXIT
   "$root/components/pb_heater/pb_heater.c" \
   "$root/tests/heater_host_env.c" \
   "$root/tests/pb_heater_tick_host_test.c" \
+  "$root/tests/pb_heater_first_heat_cases.c" \
   "$root/tests/pb_heater_tick_random.c" \
   "$dc_pid/dc_pid.c" \
   -lm -o "$out"

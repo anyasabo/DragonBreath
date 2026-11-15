@@ -5,7 +5,8 @@
 // for the GPIO, the clock, NVS, FreeRTOS and the pb_ntc sensor API.
 //
 // Part 1: directed tests for each safety path in docs/SAFETY.md.
-// Part 2: a randomized test with fixed seeds that checks invariants after each
+// Part 2: directed tests of the first-heat check (pb_heater_first_heat_cases.c).
+// Part 3: a randomized test with fixed seeds that checks invariants after each
 //         tick (see pb_heater_tick_random.c).
 //
 // Each scenario runs in a forked child, so that the static state of
@@ -32,6 +33,8 @@ pb_ntc_status_t pb_ntc_read(pb_ntc_channel_t ch, float *out_c)
 }
 
 int pb_ntc_rref_kohm(void) { return env->rref_kohm; }
+bool pb_ntc_get_swap_thermistors_active(void) { return env->ntc_swap_active; }
+float pb_ntc_get_offset_c(pb_ntc_channel_t ch) { return env->ntc_offset_c[ch]; }
 
 // --- helpers ---------------------------------------------------------------------
 
@@ -46,13 +49,32 @@ void tick(void)
     CHECK(pb_heater_is_on() == (relay() == 1));
 }
 
+bool g_fh_seed_pass = true;
+
+uint32_t fh_cfg_expected(void)
+{
+    // The fingerprint of pb_heater.c: swap flag, then both offsets in centi-C.
+    int32_t c = (int32_t)lroundf(env->ntc_offset_c[PB_NTC_CHAMBER] * 100.0f);
+    int32_t p = (int32_t)lroundf(env->ntc_offset_c[PB_NTC_PTC] * 100.0f);
+    return 0x80000000u | (env->ntc_swap_active ? 1u : 0u) |
+           ((uint32_t)(c + 512) << 1) | ((uint32_t)(p + 512) << 11);
+}
+
 void boot(void)
 {
+    // The tests of the other safety paths heat a plant without a rise. They
+    // start from a stored first-heat pass (the check ran on an earlier boot).
+    // The first-heat tests and the random test set g_fh_seed_pass to false.
+    if (g_fh_seed_pass && nvs_u("fh_state") < 0) {
+        env_nvs_write("fh_state", HOST_NVS_U8, 1);
+        env_nvs_write("fh_cfg", HOST_NVS_U32, fh_cfg_expected());
+    }
     env->ctx = CTX_BOOT;
     CHECK(pb_heater_init() == ESP_OK);
     CHECK(relay() == 0);
     pb_heater_load_config();
     pb_heater_load_fault();
+    pb_heater_load_first_heat();
     env->ctx = CTX_OTHER;
     env_check_quiescent();
     CHECK(relay() == 0);
@@ -555,6 +577,7 @@ static void t_restore_phase3_clear_survives(void)
 
 static void t_restore_fresh_device(void)
 {
+    g_fh_seed_pass = false;
     boot();                                   // no namespace: not a fault
     CHECK(!pb_heater_is_faulted());
 }
@@ -1275,6 +1298,7 @@ int main(int argc, char **argv)
         RUN(t_partial_clear_retry_restores_cause);
         RUN(t_partial_clear_second_set_fails);
         RUN_KEEP(t_partial_clear_phase2);
+        ok &= heater_first_heat_tests();
     }
 
     ok &= heater_random_test();

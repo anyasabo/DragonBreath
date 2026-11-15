@@ -482,6 +482,7 @@ void app_main(void)
     pb_heater_load_config();                 // persisted max-target + comms timeout
     pb_heater_load_fault();                  // restore a persisted safety-fault latch (fail-safe on NVS error)
     pb_ntc_load_calibration();               // persisted per-channel offsets (clamped ±5 °C on load)
+    pb_heater_load_first_heat();             // stored first-heat result (needs the mapping + offsets)
     pb_leds_load_config();                   // persisted status-LED master enable (default ON)
     pb_policy_load_params();                 // remembered mode params (never a mode/target — boot stays OFF)
     s_src = dc_source_get();                 // persisted, stable until restart

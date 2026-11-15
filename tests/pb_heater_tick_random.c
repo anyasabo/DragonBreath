@@ -19,8 +19,13 @@
 //     chamber is below the hysteresis band (so the test is not vacuous),
 //   - PID: the relay follows the reported duty at the window extremes, and
 //     the reported duty is 0 while a foldback cuts.
+//   - first-heat check: an independent model of the window (relay ON time,
+//     start readings, glitch-filtered peaks, decision) predicts the session
+//     state, the PASS/CROSSED/NO_RISE result, its fault latch and its NVS record
+//     in each tick. A hazard trip in the same tick aborts the window instead.
 // At the end, the totals over all default seeds must show each trip type, an
-// element foldback cut, a local foldback cut, relay-on ticks and liveness checks.
+// element foldback cut, a local foldback cut, relay-on ticks, liveness checks,
+// and each first-heat result.
 //
 // Where each oracle rule comes from:
 //   From docs/SAFETY.md (the specification):
@@ -44,6 +49,9 @@
 //       (so repeated trips while hot do not write NVS again)
 //     - the 2 s throttle of the deferred persist retry
 //     - the clamps of the other settings (minimum ceiling 30 C, cool_release)
+//     - first-heat: the order inside the tick (re-run request, hazard trip,
+//       stop, window step, drive, window open after the drive), the min(this,
+//       last) glitch filter of the peaks, and the 2 s throttle of the NVS retry
 #define _DEFAULT_SOURCE
 #include "pb_heater.h"
 #include "pb_heater_pid.h"
@@ -61,6 +69,10 @@
 
 typedef enum { SM_NORMAL, SM_NOISY, SM_STUCK, SM_DROPOUT, SM_JUMP, SM__COUNT } sensor_mode_t;
 static const char *const k_mode_name[SM__COUNT] = { "normal", "noisy", "stuck", "dropout", "jump" };
+
+// Plant faults that the first-heat check must find.
+typedef enum { PLANT_NORMAL, PLANT_CROSSED, PLANT_DEAD, PLANT_DETACHED, PLANT__COUNT } plant_t;
+static const char *const k_plant_name[PLANT__COUNT] = { "normal", "crossed", "dead", "detached_ptc" };
 
 typedef struct {
     uint64_t seed;
@@ -104,6 +116,18 @@ typedef struct {
     long trips[PB_FAULT__COUNT];
     long pid_liveness_checks;
     long panics, clears_ok, clears_failed;
+
+    // First-heat oracle (docs/SAFETY.md, "First-heat check").
+    int plant;                     // plant_t
+    int fh;                        // expected pb_fh_state_t
+    int64_t fh_t0, fh_last, fh_on_us;
+    int32_t fh_p0, fh_c0, fh_pprev, fh_cprev, fh_ppeak, fh_cpeak, fh_prise, fh_crise;
+    bool fh_rerun;                 // a re-run request that the next tick applies
+    int fh_stored;                 // expected pb_fh_stored_t (RAM view)
+    bool fh_pending;               // a result write that must land in NVS
+    int fh_store_val;
+    int32_t fh_store_p, fh_store_c;
+    long fh_windows, fh_pass, fh_crossed, fh_norise, fh_uncertain, fh_hazard_aborts, fh_timeouts;
 } world_t;
 
 static world_t *W;
@@ -134,6 +158,13 @@ static const char *status_name(int st)
     }
 }
 
+static pb_heater_first_heat_t fw_fh(void)
+{
+    pb_heater_first_heat_t f;
+    pb_heater_get_first_heat(&f);
+    return f;
+}
+
 static void rfail(int line, const char *fmt, ...) __attribute__((format(printf, 2, 3), noreturn));
 static void rfail(int line, const char *fmt, ...)
 {
@@ -149,7 +180,9 @@ static void rfail(int line, const char *fmt, ...)
             "  target=%.2f (oracle %.2f) max=%.2f (oracle %.2f) method=%d (oracle %d)\n"
             "  chamber=%s %.2f (%s)  ptc=%s %.2f (%s)  rref=%d  fb_cut=%.2f  ext=%.2f\n"
             "  link_age=%.3fs comms_timeout=%ums  oracle fb=%d local=%d\n"
-            "  model te=%.2f tc=%.2f  nvs fault_latch=%d fault_code=%d write_bad=%d read_bad=%d\n",
+            "  model te=%.2f tc=%.2f  nvs fault_latch=%d fault_code=%d write_bad=%d read_bad=%d\n"
+            "  plant=%s first-heat oracle=%d fw=%d on=%.3fs rise ptc=%d ch=%d (fw %d %d) "
+            "stored=%d (fw %d) nvs fh_state=%d\n",
             W->seed, W->step, W->ticks, W->action ? W->action : "-", W->seed, W->steps,
             (double)env->now_us / 1e6, relay(), (int)pb_heater_is_on(),
             (int)pb_heater_is_faulted(), (int)W->faulted, (int)pb_heater_is_inhibited(),
@@ -164,7 +197,10 @@ static void rfail(int line, const char *fmt, ...)
             env->rref_kohm, (double)W->exp_fb_cut, (double)W->ext_ctrl,
             (double)(env->now_us - W->last_link_us) / 1e6, (unsigned)W->exp_comms_ms,
             (int)W->fb, (int)W->local, W->te, W->tc,
-            nvs_u("fault_latch"), nvs_u("fault_code"), (int)W->nvs_write_bad, (int)W->nvs_read_bad);
+            nvs_u("fault_latch"), nvs_u("fault_code"), (int)W->nvs_write_bad, (int)W->nvs_read_bad,
+            k_plant_name[W->plant], W->fh, (int)fw_fh().state, (double)W->fh_on_us / 1e6,
+            (int)W->fh_prise, (int)W->fh_crise, (int)fw_fh().ptc_rise_dc, (int)fw_fh().ch_rise_dc,
+            W->fh_stored, (int)fw_fh().stored, nvs_u("fh_state"));
     fflush(stderr);
     exit(1);
 }
@@ -178,7 +214,8 @@ static void model_advance(double dt_s)
     bool on = relay() == 1;
     for (double t = 0.0; t < dt_s; t += h) {
         double step = (dt_s - t < h) ? dt_s - t : h;
-        double p = on ? W->pmax_w / (1.0 + exp((W->te - W->knee_c) / W->knee_w)) : 0.0;
+        double p = on && W->plant != PLANT_DEAD
+                   ? W->pmax_w / (1.0 + exp((W->te - W->knee_c) / W->knee_w)) : 0.0;
         double q_ec = W->kec_w_k * (W->te - W->tc);
         double q_ca = W->kca_w_k * (1.0 + (W->fan ? W->fan_boost : 0.0)) * (W->tc - W->ta);
         W->te += step * (p - q_ec) / W->ce_j_k;
@@ -189,8 +226,9 @@ static void model_advance(double dt_s)
 static void update_sensors(void)
 {
     double truth[2];
-    truth[PB_NTC_CHAMBER] = W->tc;
-    truth[PB_NTC_PTC] = W->te;
+    truth[PB_NTC_CHAMBER] = W->plant == PLANT_CROSSED ? W->te : W->tc;
+    truth[PB_NTC_PTC] = W->plant == PLANT_CROSSED ? W->tc
+                      : W->plant == PLANT_DETACHED ? W->ta : W->te;
     for (int ch = 0; ch < 2; ++ch) {
         float v = (float)truth[ch] + W->bias[ch];
         int st = PB_NTC_OK;
@@ -286,6 +324,99 @@ static void latch_oracle(pb_fault_reason_t code, bool persists)
     (void)code;
 }
 
+// --- first-heat oracle -------------------------------------------------------------
+// From docs/SAFETY.md, "First-heat check": a window opens at the first relay-on
+// of a heat with the PTC below 70.0 C and counts relay ON time only. From 12 s
+// of ON time: pass if the PTC rise is >= 3.0 C and > 2 x the chamber rise. At
+// 30 s of ON time without a pass: uncertain (report only) if the PTC rose
+// >= 3.0 C, crossed if the chamber rose >= 5.0 C and >= 3.0 C more than the
+// PTC, else no-rise. A window without a decision after 120 s of wall time
+// closes without a result.
+
+static bool fh_open(void) { return W->fh == PB_FH_ARMED || W->fh == PB_FH_EVAL; }
+static bool fh_failed(void) { return W->fh == PB_FH_CROSSED || W->fh == PB_FH_NO_RISE; }
+
+static void fh_request_store(int val, int32_t p, int32_t c)
+{
+    W->fh_stored = val;
+    W->fh_pending = true;
+    W->fh_store_val = val;
+    W->fh_store_p = p;
+    W->fh_store_c = c;
+}
+
+static bool fh_store_landed(void)
+{
+    if (nvs_u("fh_state") != W->fh_store_val) return false;
+    if (W->fh_store_val == PB_FH_STORED_UNKNOWN) return true;
+    return (int32_t)nvs_u("fh_ptc_dc") == W->fh_store_p && (int32_t)nvs_u("fh_ch_dc") == W->fh_store_c &&
+           (uint32_t)nvs_u("fh_cfg") == fh_cfg_expected();
+}
+
+// One window step on the armed, unlatched path. Returns the fault to latch.
+static pb_fault_reason_t oracle_fh_step(float ptc, float ch, bool relay_was_on)
+{
+    if (!fh_open()) return PB_FAULT_NONE;
+    int64_t dt = env->now_us - W->fh_last;
+    if (relay_was_on && dt > 0) W->fh_on_us += dt;
+    W->fh_last = env->now_us;
+    int32_t p = pb_heater_c_to_dc(ptc), c = pb_heater_c_to_dc(ch);
+    int32_t pf = p < W->fh_pprev ? p : W->fh_pprev, cf = c < W->fh_cprev ? c : W->fh_cprev;
+    W->fh_pprev = p;
+    W->fh_cprev = c;
+    if (pf > W->fh_ppeak) W->fh_ppeak = pf;
+    if (cf > W->fh_cpeak) W->fh_cpeak = cf;
+    W->fh_prise = W->fh_ppeak - W->fh_p0;
+    W->fh_crise = W->fh_cpeak - W->fh_c0;
+    int64_t on_ms = W->fh_on_us / 1000;
+    if (on_ms >= 12000 && W->fh_prise >= 30 && W->fh_prise > 2 * W->fh_crise) {
+        W->fh = PB_FH_PASS;
+        W->fh_pass++;
+        fh_request_store(PB_FH_STORED_PASS, W->fh_prise, W->fh_crise);
+        return PB_FAULT_NONE;
+    }
+    if (on_ms >= 30000) {
+        if (W->fh_prise >= 30) {
+            W->fh = PB_FH_UNCERTAIN;
+            W->fh_uncertain++;
+            return PB_FAULT_NONE;
+        }
+        if (W->fh_crise >= 50 && W->fh_crise >= W->fh_prise + 30) {
+            W->fh = PB_FH_CROSSED;
+            fh_request_store(PB_FH_STORED_CROSSED, W->fh_prise, W->fh_crise);
+            return PB_FAULT_SENSORS_CROSSED;
+        }
+        W->fh = PB_FH_NO_RISE;
+        fh_request_store(PB_FH_STORED_NO_RISE, W->fh_prise, W->fh_crise);
+        return PB_FAULT_HEATER_NO_RISE;
+    }
+    if (env->now_us - W->fh_t0 > 120000000) {
+        W->fh = PB_FH_IDLE;
+        W->fh_timeouts++;
+    } else if (on_ms >= 12000) {
+        W->fh = PB_FH_EVAL;
+    }
+    return PB_FAULT_NONE;
+}
+
+static void check_first_heat(void)
+{
+    pb_heater_first_heat_t f = fw_fh();
+    RCHECK((int)f.state == W->fh, "first-heat state %d, oracle %d", (int)f.state, W->fh);
+    RCHECK((int)f.stored == W->fh_stored, "first-heat stored %d, oracle %d", (int)f.stored, W->fh_stored);
+    RCHECK(f.enforced, "first-heat not enforced in a production build");
+    if (fh_open() || W->fh == PB_FH_PASS || fh_failed() || W->fh == PB_FH_UNCERTAIN) {
+        if (W->fh != PB_FH_PASS || W->fh_windows > 0) {
+            RCHECK(f.ptc_rise_dc == W->fh_prise && f.ch_rise_dc == W->fh_crise,
+                   "first-heat rises %d/%d, oracle %d/%d", (int)f.ptc_rise_dc, (int)f.ch_rise_dc,
+                   (int)W->fh_prise, (int)W->fh_crise);
+        }
+    }
+    if (fh_open())
+        RCHECK((int64_t)f.on_ms == W->fh_on_us / 1000, "first-heat ON time %u ms, oracle %lld ms",
+               (unsigned)f.on_ms, (long long)(W->fh_on_us / 1000));
+}
+
 static void one_tick(void)
 {
     int64_t dt_ms = chance(0.9) ? 500 : (int64_t)rnd_u(3000) + 1;
@@ -310,6 +441,32 @@ static void one_tick(void)
     const pb_fault_reason_t trip = oracle_trip(ptc_ok, ptc, ch_ok, ch, armed, expired);
     const bool ext = isfinite(W->ext_ctrl);
     const float reg = ext ? W->ext_ctrl : ch;
+    const bool relay_was_on = relay() == 1;
+
+    // First-heat, in the order of the tick.
+    if (W->fh_rerun) {
+        W->fh_rerun = false;
+        if (W->fh == PB_FH_PASS || W->fh == PB_FH_UNCERTAIN || fh_open()) {
+            W->fh = PB_FH_IDLE;
+            W->fh_on_us = 0;
+            W->fh_prise = W->fh_crise = 0;
+        }
+    }
+    pb_fault_reason_t fh_trip = PB_FAULT_NONE;
+    const bool fh_was_open = fh_open();
+    const bool fh_was_pending = W->fh_pending;
+    const int fh_val_before = W->fh_store_val;
+    if (trip != PB_FAULT_NONE) {
+        if (fh_open()) { W->fh = PB_FH_IDLE; W->fh_hazard_aborts++; }   // the hazard wins
+    } else if (pre_faulted || !armed) {
+        if (fh_open()) W->fh = PB_FH_IDLE;
+        if (!pre_faulted && (fh_failed() || W->fh == PB_FH_UNCERTAIN)) W->fh = PB_FH_IDLE;
+    } else {
+        if (fh_failed()) W->fh = PB_FH_IDLE;     // the fault was cleared (UNCERTAIN stays)
+        fh_trip = oracle_fh_step(ptc, ch, relay_was_on);
+    }
+    const bool fh_new_store = W->fh_pending && (!fh_was_pending || W->fh_store_val != fh_val_before ||
+                                                (fh_was_open && !fh_open()));
 
     tick();
     if (pre_faulted) W->faulted_ticks++;
@@ -330,6 +487,17 @@ static void one_tick(void)
             RCHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == (int)trip,
                    "trip %d was not persisted (NVS cause was %d)", (int)trip, W->exp_cause);
         latch_oracle(trip, true);
+    } else if (fh_trip != PB_FAULT_NONE) {
+        RCHECK(relay() == 0, "first-heat trip %d did not turn the relay off", (int)fh_trip);
+        RCHECK(pb_heater_is_faulted() && pb_heater_fault_code() == fh_trip,
+               "first-heat trip %d did not latch (code %d)", (int)fh_trip, (int)pb_heater_fault_code());
+        if (nvs_writes_work())
+            RCHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == (int)fh_trip,
+                   "first-heat trip %d was not persisted although NVS works", (int)fh_trip);
+        W->trips[fh_trip]++;
+        if (fh_trip == PB_FAULT_SENSORS_CROSSED) W->fh_crossed++;
+        else W->fh_norise++;
+        latch_oracle(fh_trip, true);
     } else {
         if (pre_faulted || !armed) {
             W->fb = false;
@@ -347,9 +515,27 @@ static void one_tick(void)
         if (W->local) W->local_cut_ticks++;
     }
 
+    // A window opens at the first relay-on of a heat (after the drive decision).
+    if (relay() == 1 && W->fh == PB_FH_IDLE && pb_heater_c_to_dc(ptc) < 700) {
+        W->fh = PB_FH_ARMED;
+        W->fh_t0 = W->fh_last = env->now_us;
+        W->fh_on_us = 0;
+        W->fh_p0 = W->fh_pprev = W->fh_ppeak = pb_heater_c_to_dc(ptc);
+        W->fh_c0 = W->fh_cprev = W->fh_cpeak = pb_heater_c_to_dc(ch);
+        W->fh_prise = W->fh_crise = 0;
+        W->fh_windows++;
+    }
+    check_first_heat();
+    // A new result is written in the same tick when NVS works.
+    if (fh_new_store && nvs_writes_work()) {
+        RCHECK(fh_store_landed(), "first-heat result %d not written although NVS works", W->fh_store_val);
+        W->fh_pending = false;
+    }
+
     if (relay() == 1) {
         W->relay_on_ticks++;
         RCHECK(trip == PB_FAULT_NONE, "relay on with a trip condition");
+        RCHECK(fh_trip == PB_FAULT_NONE, "relay on in a first-heat trip tick");
         RCHECK(!pre_faulted && !pb_heater_is_faulted(), "relay on while a fault is latched");
         RCHECK(armed, "relay on without a positive target");
         RCHECK(ptc_ok && ch_ok, "relay on with a sensor that is not OK");
@@ -361,13 +547,13 @@ static void one_tick(void)
         RCHECK(target <= W->exp_max && W->exp_max <= PB_HEATER_ABS_MAX_TARGET_C,
                "relay on with a target above the clamp");
     }
-    if (W->exp_method == PB_HEATER_METHOD_BANGBANG && trip == PB_FAULT_NONE &&
+    if (W->exp_method == PB_HEATER_METHOD_BANGBANG && trip == PB_FAULT_NONE && fh_trip == PB_FAULT_NONE &&
         !pre_faulted && armed && !W->fb && !(ext && W->local) &&
         reg < target - PB_HEATER_HYSTERESIS_C - 0.01f) {
         W->liveness_checks++;
         RCHECK(relay() == 1, "bang-bang: relay off although heat is permitted and demanded");
     }
-    if (W->exp_method == PB_HEATER_METHOD_PID && trip == PB_FAULT_NONE &&
+    if (W->exp_method == PB_HEATER_METHOD_PID && trip == PB_FAULT_NONE && fh_trip == PB_FAULT_NONE &&
         !pre_faulted && armed) {
         pb_heater_telemetry_t tel;
         pb_heater_get_telemetry(&tel);
@@ -390,6 +576,11 @@ static void one_tick(void)
         env->now_us - W->nvs_healthy_since_us > 2000000 &&
         (nvs_u("fault_latch") != 1 || nvs_restored_cause() != W->exp_cause))
         rfail(__LINE__, "pending fault persist did not land 2 s after NVS recovered");
+    if (W->fh_pending && nvs_writes_work() && env->now_us - W->nvs_healthy_since_us > 2000000) {
+        RCHECK(fh_store_landed(), "pending first-heat result %d did not land 2 s after NVS recovered",
+               W->fh_store_val);
+        W->fh_pending = false;
+    }
 
     check_settings();
 }
@@ -600,7 +791,12 @@ static void act_nvs_read_fault(void)
 static void act_nvs_corrupt(void)
 {
     // A hand-edited or corrupt stored setting. It takes effect at the next boot.
-    switch (rnd_u(5)) {
+    switch (rnd_u(7)) {
+    case 5: env_nvs_write("fh_state", HOST_NVS_U8, rnd_u(6)); break;
+    case 6:
+        if (chance(0.5)) env_nvs_write("fh_cfg", HOST_NVS_U32, (uint32_t)rnd64());
+        else env_nvs_write("fh_cfg", HOST_NVS_U32, fh_cfg_expected());
+        break;
     case 0: env_nvs_write("heat_max_c", HOST_NVS_U32, (uint32_t)rnd64()); break;
     case 1: env_nvs_write("heat_comms_ms", HOST_NVS_U32, (uint32_t)rnd64()); break;
     case 2: env_nvs_write("fb_cut_c", HOST_NVS_U32, rnd_u(30000)); break;
@@ -667,6 +863,26 @@ static void act_bias(void)
 }
 static void act_reboot(void) { /* handled by the caller */ }
 
+static void act_plant(void)
+{
+    // Mostly a normal plant. The faults are what the first-heat check must find.
+    W->plant = chance(0.5) ? PLANT_NORMAL : (int)rnd_u(PLANT__COUNT);
+}
+
+static void act_fh_rerun(void)
+{
+    env->ctx = CTX_OTHER;
+    esp_err_t r = pb_heater_first_heat_rerun();
+    env_check_quiescent();
+    W->fh_rerun = true;
+    fh_request_store(PB_FH_STORED_UNKNOWN, 0, 0);
+    if (!W->nvs_write_bad) RCHECK(r == ESP_OK, "first-heat re-run failed with working NVS (%d)", r);
+    if (r == ESP_OK) {
+        RCHECK(nvs_u("fh_state") == PB_FH_STORED_UNKNOWN, "re-run reported success but NVS differs");
+        W->fh_pending = false;
+    }
+}
+
 static const action_t k_actions[] = {
     { "set_target",      14, act_set_target },
     { "operator",         6, act_operator },
@@ -693,6 +909,8 @@ static const action_t k_actions[] = {
     { "emergency_off",    1, act_emergency },
     { "inhibit",          1, act_inhibit },
     { "reboot",           1, act_reboot },
+    { "plant",            2, act_plant },
+    { "fh_rerun",         3, act_fh_rerun },
 };
 #define N_ACTIONS ((int)(sizeof(k_actions) / sizeof(k_actions[0])))
 
@@ -733,6 +951,28 @@ static void oracle_boot(void)
     W->expect_persist = W->exp_cause != PB_FAULT_NONE;
     W->fb = W->local = false;
     W->ext_ctrl = NAN;
+
+    // Expected first-heat state: a stored result counts only for the same
+    // mapping and offsets. A read failure gives UNKNOWN (the check runs again).
+    W->fh = PB_FH_IDLE;
+    W->fh_rerun = false;
+    W->fh_stored = PB_FH_STORED_UNKNOWN;
+    W->fh_prise = W->fh_crise = 0;
+    W->fh_on_us = 0;
+    W->fh_pending = false;         // a write that did not land before the reboot is lost
+    if (!env->nvs_fail_open_ro && env->nvs_ns_exists && !env->nvs_fail_get &&
+        env_nvs_read("fh_state", &v) && v >= 1 && v <= 3) {
+        uint32_t cfg;
+        if (env_nvs_read("fh_cfg", &cfg) && cfg == fh_cfg_expected()) {
+            W->fh_stored = (int)v;
+            uint32_t r;
+            W->fh_prise = env_nvs_read("fh_ptc_dc", &r) ? (int32_t)r : 0;
+            W->fh_crise = env_nvs_read("fh_ch_dc", &r) ? (int32_t)r : 0;
+            if (v == PB_FH_STORED_PASS) W->fh = PB_FH_PASS;
+        } else {
+            fh_request_store(PB_FH_STORED_UNKNOWN, 0, 0);   // stale: written at boot
+        }
+    }
     W->last_link_us = env->now_us;
     W->nvs_healthy_since_us = env->now_us;
 }
@@ -740,10 +980,16 @@ static void oracle_boot(void)
 static void random_child(void)
 {
     env->level[PB_GPIO_RELAY] = (int)rnd_u(2);   // undefined pin state before init
+    g_fh_seed_pass = false;
     oracle_boot();
     boot();
     RCHECK(relay() == 0, "relay not off after boot");
     check_settings();
+    if (W->fh_pending && nvs_writes_work()) {
+        RCHECK(fh_store_landed(), "stale first-heat result not reset at boot");
+        W->fh_pending = false;
+    }
+    check_first_heat();
 
     int total = 0;
     for (int i = 0; i < N_ACTIONS; ++i) total += k_actions[i].weight;
@@ -772,6 +1018,7 @@ static long env_long(const char *name, long def)
 typedef struct {
     long relay_on, liveness, pid_liveness, fb_cut, local_cut;
     long trips[PB_FAULT__COUNT];
+    long fh_windows, fh_pass, fh_crossed, fh_norise, fh_uncertain, fh_hazard_aborts;
 } totals_t;
 
 static bool run_seed(uint64_t seed, long steps, totals_t *tot)
@@ -819,6 +1066,15 @@ static bool run_seed(uint64_t seed, long steps, totals_t *tot)
     tot->fb_cut += W->fb_cut_ticks;
     tot->local_cut += W->local_cut_ticks;
     for (int i = 0; i < PB_FAULT__COUNT; ++i) tot->trips[i] += W->trips[i];
+    printf("     first-heat windows=%ld pass=%ld crossed=%ld no_rise=%ld uncertain=%ld hazard_aborts=%ld "
+           "timeouts=%ld\n", W->fh_windows, W->fh_pass, W->fh_crossed, W->fh_norise, W->fh_uncertain,
+           W->fh_hazard_aborts, W->fh_timeouts);
+    tot->fh_windows += W->fh_windows;
+    tot->fh_pass += W->fh_pass;
+    tot->fh_crossed += W->fh_crossed;
+    tot->fh_norise += W->fh_norise;
+    tot->fh_uncertain += W->fh_uncertain;
+    tot->fh_hazard_aborts += W->fh_hazard_aborts;
     return true;
 }
 
@@ -837,6 +1093,12 @@ static bool check_totals(const totals_t *t)
         { "chamber sensor trips", t->trips[PB_FAULT_CHAMBER_SENSOR] },
         { "PTC sensor trips", t->trips[PB_FAULT_PTC_SENSOR] },
         { "link-lost trips", t->trips[PB_FAULT_LINK_LOST] },
+        { "first-heat windows", t->fh_windows },
+        { "first-heat passes", t->fh_pass },
+        { "first-heat crossed results", t->fh_crossed },
+        { "first-heat no-rise results", t->fh_norise },
+        { "first-heat uncertain results", t->fh_uncertain },
+        { "first-heat windows aborted by a hazard trip", t->fh_hazard_aborts },
     };
     bool ok = true;
     for (size_t i = 0; i < sizeof(req) / sizeof(req[0]); ++i) {

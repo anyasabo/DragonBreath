@@ -4,52 +4,52 @@ dependencies:
   dc_prusa:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_prusa
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_evlog:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_evlog
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_source:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_source
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_bambu:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_bambu
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_wifi:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_wifi
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_moonraker:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_moonraker
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_ui:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_ui
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_mqtt:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_mqtt
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_portal:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_portal
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_pid:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_pid
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_peer:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_peer
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_time:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_time
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252
   dc_syslog:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_syslog
-    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+    version: 7d07bd1e5285e96c64db5554f07c5dc523726252

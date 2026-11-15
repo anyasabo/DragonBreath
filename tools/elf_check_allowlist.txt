@@ -11,11 +11,17 @@
 # - it is a short mutex section (category "lock"),
 # - it is in a source client that runs in the control task by design.
 # Known debt on upstream main:
-# - control_task formats and logs the status line each 2 s (log, printf, double).
 # - db_klipper_mqtt_tick publishes MQTT from the control task (esp_mqtt_write).
 #   On an error, esp_mqtt_abort_connection calls esp_transport_close (indirect:
 #   the TLS close can write to the network).
-# - pb_policy_get_snapshot uses snprintf to copy strings.
+# Fork-only entries (anya):
+# - fh_store: the first-heat result goes to NVS from the control task, once for
+#   each result. It takes the persist lock with no wait. If the lock is busy,
+#   the next tick tries again after 2 s.
+# - fh_abort, fh_after_drive, fh_restart, fh_store, trip: one log line for each
+#   first-heat event or safety trip.
+# - persist_fault: one more nvs_set_u8 call site. A fault clear writes the latch
+#   key last, so a failure part way leaves flash latched.
 # Reviewed indirect sites:
 # - wake_control_task: the control-task wake callback (xTaskNotifyGive).
 # - adc_cali_raw_to_voltage: the ADC calibration scheme function.
@@ -25,15 +31,20 @@ __assert_func spi_flash_cache_enabled 1  # blocking
 control_task ulTaskGenericNotifyTake 1  # blocking
 esp_event_loop_run xQueueReceive 1  # blocking
 esp_mqtt_write esp_transport_write 1  # blocking
+fh_store nvs_close 1  # blocking
+fh_store nvs_commit 1  # blocking
+fh_store nvs_open 1  # blocking
+fh_store nvs_set_i32 2  # blocking
+fh_store nvs_set_u32 1  # blocking
+fh_store nvs_set_u8 2  # blocking
 persist_fault nvs_close 1  # blocking
 persist_fault nvs_commit 1  # blocking
 persist_fault nvs_open 1  # blocking
-persist_fault nvs_set_u8 2  # blocking
+persist_fault nvs_set_u8 3  # blocking
 zones_load nvs_close 1  # blocking
 zones_load nvs_get_blob 1  # blocking
 zones_load nvs_get_u8 1  # blocking
 zones_load nvs_open 1  # blocking
-control_task __extendsfdf2 20  # double
 db_klipper_mqtt_tick __extendsfdf2 1  # double
 pb_heater_set_target_c __extendsfdf2 2  # double
 publish_state __extendsfdf2 3  # double
@@ -65,6 +76,8 @@ esp_mqtt_abort_connection xQueueGiveMutexRecursive 1  # lock
 esp_mqtt_abort_connection xQueueTakeMutexRecursive 1  # lock
 esp_mqtt_client_publish xQueueGiveMutexRecursive 3  # lock
 esp_mqtt_client_publish xQueueTakeMutexRecursive 1  # lock
+fh_store xQueueGenericSend 1  # lock
+fh_store xQueueSemaphoreTake 1  # lock
 lock_release_generic xQueueGenericSend 1  # lock
 lock_release_generic xQueueGiveMutexRecursive 1  # lock
 pb_ha_tick xQueueGenericSend 3  # lock
@@ -95,7 +108,7 @@ adc_cali_raw_to_voltage esp_log_write 2  # log
 adc_lock_release esp_log_write 1  # log
 adc_oneshot_read esp_log_write 1  # log
 add_entry esp_rom_printf 2  # log
-control_task esp_log_write 4  # log
+control_task esp_log_write 1  # log
 db_klipper_mqtt_tick esp_log_write 2  # log
 do_latch esp_log_write 1  # log
 esp_mqtt_client_publish esp_log_write 2  # log
@@ -103,6 +116,10 @@ esp_mqtt_write esp_log_write 2  # log
 esp_task_wdt_add esp_log_write 1  # log
 esp_task_wdt_reset esp_log_write 1  # log
 esp_task_wdt_reset esp_rom_printf 1  # log
+fh_abort esp_log_write 1  # log
+fh_after_drive esp_log_write 1  # log
+fh_restart esp_log_write 1  # log
+fh_store esp_log_write 1  # log
 gpio_set_level esp_log_write 1  # log
 mqtt_client_enqueue_publish esp_log_write 1  # log
 outbox_enqueue esp_log_write 2  # log
@@ -113,15 +130,14 @@ pb_heater_tick esp_log_write 3  # log
 pb_policy_tick esp_log_write 1  # log
 persist_fault esp_log_write 1  # log
 stop_heat esp_log_write 1  # log
+trip esp_log_write 1  # log
 add_entry calloc 1  # malloc
 cfree heap_caps_free 1  # malloc
 esp_event_post_to calloc 1  # malloc
 outbox_enqueue calloc 1  # malloc
 outbox_enqueue heap_caps_malloc 1  # malloc
-control_task snprintf 4  # printf
 db_klipper_mqtt_tick snprintf 1  # printf
 dc_evlog_add vsnprintf 1  # printf
-pb_policy_get_snapshot snprintf 3  # printf
 publish_state snprintf 4  # printf
 publish_telemetry snprintf 6  # printf
-set_power_on snprintf 2  # printf
+set_power_on snprintf 1  # printf

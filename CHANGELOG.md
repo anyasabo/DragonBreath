@@ -7,6 +7,16 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- `tools/smoke.py`: an attended release smoke test over API v2 for a release
+  image without a serial console. It reads the state, health and `/metrics`.
+  It heats to a low target (40 °C default, 50 °C maximum) and checks OFF. It
+  trips the comms watchdog at the minimum `comms_ms`. It checks that the fault
+  stays latched over a reboot, and it checks panic-off. It asks before each step that
+  heats or changes a setting, and sends OFF on each exit path.
+  `tests/test_smoke.py` runs it in CI against a mock API v2 server. See
+  `docs/SMOKE_TEST.md`.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

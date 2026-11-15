@@ -13,6 +13,7 @@ on:
       - 'sdkconfig.hil-*'
       - 'sdkconfig.debug-*'
       - 'tools/hil.py'
+      - 'tools/smoke.py'
       - 'tools/idf-build.sh'
       - '.github/workflows/firmware-build.yml'
   pull_request:
@@ -26,6 +27,7 @@ on:
       - 'sdkconfig.hil-*'
       - 'sdkconfig.debug-*'
       - 'tools/hil.py'
+      - 'tools/smoke.py'
       - 'tools/idf-build.sh'
   workflow_dispatch:
 
@@ -79,6 +81,9 @@ jobs:
 
       - name: Test HIL scenario runner
         run: python3 -m unittest tests/test_hil_runner.py
+
+      - name: Test network smoke-test tool against a mock API v2 server
+        run: python3 -m unittest tests/test_smoke.py
 
       # E1 static analysis: cppcheck over OUR OWN code (components/ + main/). Fails on
       # any error/warning/performance/portability finding (--error-exitcode). The C

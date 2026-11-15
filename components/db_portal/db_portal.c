@@ -827,7 +827,7 @@ static esp_err_t send_json_obj(httpd_req_t *req, cJSON *root)
 // setup UI calls this when the operator opens/clicks Bambu setup, then polls GET.
 static esp_err_t bambu_scan_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;   // starts network activity
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;   // starts network activity
     dc_bambu_scan_start();
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "scanning", dc_bambu_scanning());
@@ -891,7 +891,7 @@ static esp_err_t presets_get(httpd_req_t *req)
 // POST /api/v2/presets  body {"presets":[t0,t1,t2,t3]} — save + echo back (clamped).
 static esp_err_t presets_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;   // writes NVS: CSRF-gate it
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;   // writes NVS: CSRF-gate it
     int len = req->content_len;
     if (len <= 0 || len > 256) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body"); return ESP_FAIL; }
     char buf[257];

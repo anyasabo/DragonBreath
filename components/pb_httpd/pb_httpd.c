@@ -174,7 +174,8 @@ esp_err_t pb_httpd_set_ctl_token(const char *token)
 
 // Reject a mutating request lacking a valid PB_AUTH_HEADER (403), with no token
 // in a build that requires one (403), or during an auth lockout (429). Returns
-// true when the caller should stop (already responded).
+// true when the caller should stop (already responded). The caller must then
+// return ESP_FAIL: see pb_httpd.h.
 bool pb_httpd_auth_reject(httpd_req_t *req)
 {
     pb_auth_result_t r = auth_check(req);
@@ -579,7 +580,7 @@ static esp_err_t policy_error(
 
 static esp_err_t command_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
@@ -702,7 +703,7 @@ static esp_err_t command_post(httpd_req_t *req)
 
 static esp_err_t heartbeat_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     cJSON *root = recv_json(req);
     cJSON *version = root ? cJSON_GetObjectItemCaseSensitive(root, "api_version") : NULL;
     cJSON *lease_id = root ? cJSON_GetObjectItemCaseSensitive(root, "lease_id") : NULL;
@@ -931,7 +932,7 @@ static bool parse_u32(const char *s, uint32_t *out)
 // recognized field must be present.
 static esp_err_t settings_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
 
     char q[128];
     if (httpd_req_get_url_query_str(req, q, sizeof q) != ESP_OK) {
@@ -1051,7 +1052,7 @@ static esp_err_t calibration_get(httpd_req_t *req)
 // pb_ntc; the clamped effective offsets are echoed back. At least one field required.
 static esp_err_t calibration_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
@@ -1113,7 +1114,7 @@ static esp_err_t zones_get(httpd_req_t *req) { return zones_send(req); }
 // a custom profile. Auth-gated; applies live.
 static esp_err_t zones_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
@@ -1202,7 +1203,7 @@ static esp_err_t heater_method_get(httpd_req_t *req) { return heater_method_send
 
 static esp_err_t heater_method_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);
@@ -1228,7 +1229,7 @@ static esp_err_t heater_method_post(httpd_req_t *req)
 // from a delayed task so the JSON flushes before the socket is torn down.
 static esp_err_t restart_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     if (refuse_while_heating(req, "turn the heater off before restarting"))
         return ESP_OK;
     httpd_resp_set_type(req, "application/json");
@@ -1245,7 +1246,7 @@ static esp_err_t restart_post(httpd_req_t *req)
 // refused while heating. Only removes/redirects the boot pointer — no flash write.
 static esp_err_t boot_inactive_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     if (refuse_while_heating(req, "turn the heater off before switching firmware"))
         return ESP_OK;
     const esp_partition_t *inact = esp_ota_get_next_update_partition(NULL);
@@ -1275,7 +1276,7 @@ static esp_err_t boot_inactive_post(httpd_req_t *req)
 // token, safety limits) so the device reboots back to AP provisioning.
 static esp_err_t factory_reset_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     if (refuse_while_heating(req, "turn the heater off before a factory reset"))
         return ESP_OK;
 
@@ -1355,7 +1356,7 @@ static esp_err_t logs_get(httpd_req_t *req)
 // text/plain, oldest -> newest. Read-only; never energizes the heater.
 static esp_err_t console_get(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     char *buf = malloc(DC_EVLOG_CONSOLE_BYTES + 1);
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
@@ -1376,7 +1377,7 @@ static esp_err_t console_get(httpd_req_t *req)
 // with no token set the auth gate admits only setup-AP clients (see auth_check).
 static esp_err_t token_post(httpd_req_t *req)
 {
-    if (pb_httpd_auth_reject(req)) return ESP_OK;
+    if (pb_httpd_auth_reject(req)) return ESP_FAIL;
     cJSON *root = recv_json(req);
     if (!root)
         return api_error(req, "400 Bad Request", "invalid_command", "invalid JSON body", NULL);

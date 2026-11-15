@@ -57,6 +57,8 @@ These routes do **not** check the header:
 
 - The API v2 and product routes return HTTP 403 `auth_failed`, HTTP 403
   `token_required` or HTTP 429 `auth_locked`.
+  After the error, the device closes the connection. It does not read the
+  request body.
 - The shared portal routes use a callback that returns only true or false. For
   each failure kind, also a lockout, they return HTTP 403 `authorization required`.
 - On an HTTP 403, the setup and settings pages of the dashboard forget the stored

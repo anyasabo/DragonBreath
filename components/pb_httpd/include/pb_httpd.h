@@ -39,7 +39,10 @@ esp_err_t pb_httpd_register(httpd_handle_t server);
 bool pb_httpd_auth_ok(httpd_req_t *req);
 
 // Run the same check. On failure, send the API v2 error (403 auth_failed or
-// token_required, 429 auth_locked) and return true: the handler must stop.
+// token_required, 429 auth_locked) and return true. Then the handler must stop
+// and return ESP_FAIL, so that httpd closes the socket. With ESP_OK, httpd
+// reads and discards the unread body with no time limit, and Content-Length
+// has no limit. A client with no token can then block the server.
 bool pb_httpd_auth_reject(httpd_req_t *req);
 
 // Store the control token in NVS (NULL or "" erases it). A token must pass

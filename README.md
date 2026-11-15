@@ -338,11 +338,11 @@ belongs to an older pin, it moves that dependency state under the build director
 instead of allowing ESP Component Manager to silently reuse it.
 
 The host unit tests need only a C compiler. `CC` and `HOST_TEST_CFLAGS` select
-the compiler and the extra flags:
+the compiler (for example `clang` or `clang-NN`) and the extra flags:
 
 ```bash
 sh tests/run_host_tests.sh
-CC=clang HOST_TEST_CFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g" \
+CC=clang-23 HOST_TEST_CFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g" \
   sh tests/run_host_tests.sh
 ```
 

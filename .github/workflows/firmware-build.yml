@@ -43,6 +43,10 @@ concurrency:
 jobs:
   # Host unit tests: small C programs, no ESP-IDF. The container matches the
   # devspace (Ubuntu 26.10). Each entry builds all tests with one compiler.
+  # Ubuntu 26.10 support ends in about July 2027. Move the image (here and in
+  # the coverage job) to the new Ubuntu release at each release.
+  # ASan and LSan run in the default Docker seccomp profile. If LSan fails
+  # with a ptrace error, add `options: --security-opt seccomp=unconfined`.
   host-tests:
     name: host-tests (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -64,7 +68,7 @@ jobs:
       - name: Install compilers
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl gcc-16 clang libc6-dev
+          apt-get install -y --no-install-recommends ca-certificates curl gcc-16 clang libclang-rt-dev libc6-dev
           "${{ matrix.cc }}" --version
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -89,11 +93,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Run host tests with coverage
+        # Use a relative path: in a container job, github.workspace is the
+        # path on the host, not the path in the container.
         env:
           CC: gcc-16
           HOST_TEST_CFLAGS: --coverage -O0
-          TMPDIR: ${{ github.workspace }}/coverage-obj
         run: |
+          export TMPDIR="$PWD/coverage-obj"
           mkdir -p "$TMPDIR"
           sh tests/run_host_tests.sh
 
@@ -118,6 +124,7 @@ jobs:
           path: coverage-html/
 
   build:
+    needs: [host-tests]
     runs-on: ubuntu-latest
     steps:
       # SHA-pinned (supply-chain); trailing comment tracks the human version.

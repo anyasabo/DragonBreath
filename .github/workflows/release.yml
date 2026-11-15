@@ -35,6 +35,9 @@ jobs:
           fi
           echo "version=$V" | tee -a "$GITHUB_OUTPUT"
 
+      - name: Run host tests
+        run: sh tests/run_host_tests.sh
+
       - name: Build (ESP-IDF v5.3.5)
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:

@@ -47,6 +47,11 @@ _Static_assert(PB_FAULT__COUNT <= 32, "s_trip_causes is a 32-bit mask of pb_faul
 static uint32_t    s_panic_offs;    // guarded by s_mux
 static int64_t     s_relay_on_us;   // guarded by s_mux; completed SSR on-time
 static int64_t     s_relay_since_us; // guarded by s_mux; start of the current on period
+static uint32_t    s_foldback_cuts; // guarded by s_mux; element foldback cut edges
+// Metrics: timing of the last pb_heater_tick (control task only, read by it).
+static int64_t     s_tick_sensors_start_us;
+static int64_t     s_tick_sensors_end_us;
+static pb_heater_tick_timing_t s_tick_timing;
 static pb_heater_pid_state_t s_pid; // control-task only — shared dc_pid state + SSR window
 static float       s_commanded_duty; // guarded by s_mux; PID output after approach limit
 static float       s_approach_limit; // guarded by s_mux; product-owned active duty ceiling
@@ -658,6 +663,28 @@ bool pb_heater_is_inhibited(void) { return s_inhibited; }   // atomic bool read
 bool pb_heater_is_faulted(void) { return s_latched_off || s_inhibited; }
 bool pb_heater_is_on(void) { return s_on; }                 // atomic bool read
 
+static void heater_tick(void);
+
+// The tick with its timing for the metrics. The timing adds two clock reads
+// around the sensor reads and two here. It does not change the control.
+void pb_heater_tick(void)
+{
+    const int64_t t0 = esp_timer_get_time();
+    s_tick_sensors_start_us = t0;
+    s_tick_sensors_end_us = t0;          // a tick without sensor reads: 0 us
+    heater_tick();
+    const int64_t t1 = esp_timer_get_time();
+    int64_t sensors = s_tick_sensors_end_us - s_tick_sensors_start_us;
+    int64_t total = t1 - t0;
+    s_tick_timing.sensors_us = sensors > 0 ? (uint32_t)(sensors > UINT32_MAX ? UINT32_MAX : sensors) : 0;
+    s_tick_timing.total_us = total > 0 ? (uint32_t)(total > UINT32_MAX ? UINT32_MAX : total) : 0;
+}
+
+void pb_heater_get_tick_timing(pb_heater_tick_timing_t *out)
+{
+    if (out) *out = s_tick_timing;
+}
+
 void pb_heater_get_counters(pb_heater_counters_t *out)
 {
     if (!out) return;
@@ -668,6 +695,7 @@ void pb_heater_get_counters(pb_heater_counters_t *out)
     int64_t now = esp_timer_get_time();
     memcpy(out->trips, s_trips, sizeof out->trips);
     out->panic_offs = s_panic_offs;
+    out->foldback_cuts = s_foldback_cuts;
     int64_t open_us = s_on ? now - s_relay_since_us : 0;
     int64_t on_us = s_relay_on_us + (open_us > 0 ? open_us : 0);
     taskEXIT_CRITICAL(&s_mux);
@@ -1105,7 +1133,7 @@ bool pb_heater_heat_mode(void)     // "armed and not tripped" (independent of SS
     return m;
 }
 
-void pb_heater_tick(void)          // control-task context; sole writer of s_on
+static void heater_tick(void)      // control-task context; sole writer of s_on
 {
     // Retry a deferred fault-latch persist until it commits, so a latch that
     // couldn't be written when it happened (NVS busy, or a fault before nvs_init)
@@ -1178,8 +1206,10 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
     // longer touches any LED.
 
     float ptc_c = 0.0f, chamber_c = 0.0f;
+    s_tick_sensors_start_us = esp_timer_get_time();
     pb_ntc_status_t ps = pb_ntc_read(PB_NTC_PTC, &ptc_c);
     pb_ntc_status_t cs = pb_ntc_read(PB_NTC_CHAMBER, &chamber_c);
+    s_tick_sensors_end_us = esp_timer_get_time();
 
     // All safety trips (over-temp cutoffs, fail-closed sensor faults, comms-loss
     // watchdog) are decided by the pure, host-tested pb_heater_eval_trip() so the
@@ -1241,7 +1271,13 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
     // they get a lower cut). Pure + host-tested; ps==OK is guaranteed here (checked above).
     float fb_cut, fb_resume;
     pb_heater_effective_foldback(pb_heater_get_fb_cut_c(), pb_ntc_rref_kohm(), &fb_cut, &fb_resume);
+    const bool was_fb_cut = s_fb_cut;
     s_fb_cut = pb_heater_foldback_cut(ps == PB_NTC_OK, ptc_c, s_fb_cut, fb_cut, fb_resume);
+    if (s_fb_cut && !was_fb_cut) {          // metrics: one foldback cycle starts
+        taskENTER_CRITICAL(&s_mux);
+        s_foldback_cuts++;
+        taskEXIT_CRITICAL(&s_mux);
+    }
 
     // Either soft safety layer inhibits heat regardless of the requested duty; it
     // applies to both control methods below.

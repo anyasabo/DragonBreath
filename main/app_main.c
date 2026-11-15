@@ -376,8 +376,22 @@ static void control_task(void *arg)
         // Safety/control loop: enforces every heater cutoff + fan-follows-heater.
         // pb_policy is the sole mode/target writer. Network clients and local
         // inputs submit commands to it; this task applies the resulting outputs.
+        const int64_t policy_start_us = esp_timer_get_time();
         pb_policy_tick();
+        const int64_t policy_end_us = esp_timer_get_time();
         if (wdt_armed) esp_task_wdt_reset();   // successful loop iteration
+
+        // Airflow signs (report-only, integer math, O(1), no logging).
+        {
+            pb_ntc_status_t ps = pb_ntc_last_status(PB_NTC_PTC);
+            pb_ntc_status_t cs = pb_ntc_last_status(PB_NTC_CHAMBER);
+            pb_metrics_airflow_tick(policy_end_us, pb_heater_heat_mode(), pb_heater_is_on(),
+                pb_fan_get_level() > 0,
+                ps == PB_NTC_OK ? pb_metrics_tenths(pb_ntc_smoothed_c(PB_NTC_PTC))
+                                : PB_AIRFLOW_UNKNOWN,
+                cs == PB_NTC_OK ? pb_metrics_tenths(pb_ntc_smoothed_c(PB_NTC_CHAMBER))
+                                : PB_AIRFLOW_UNKNOWN);
+        }
 
         if (++dbg >= 4) {   // ~2 s
             dbg = 0;
@@ -434,7 +448,14 @@ static void control_task(void *arg)
         // Metrics (no logging, one short critical section): record this tick,
         // and compute the planned start of the next periodic tick in us.
         const int64_t tick_end_us = esp_timer_get_time();
-        pb_metrics_tick_record(tick_start_us, tick_end_us, scheduled_us);
+        pb_heater_tick_timing_t ht;
+        pb_heater_get_tick_timing(&ht);
+        uint32_t parts[PB_METRICS_TICK_PARTS];
+        pb_metrics_tick_split((uint32_t)(tick_end_us - tick_start_us),
+                              (uint32_t)(policy_start_us - tick_start_us),
+                              (uint32_t)(policy_end_us - policy_start_us),
+                              ht.total_us, ht.sensors_us, parts);
+        pb_metrics_tick_record(tick_start_us, tick_end_us, scheduled_us, parts);
         const int64_t deadline_us =
             tick_end_us + (int64_t)remaining * portTICK_PERIOD_MS * 1000;
         uint32_t notified = ulTaskNotifyTake(pdTRUE, wait);
@@ -522,6 +543,7 @@ void app_main(void)
         ESP_LOGE(TAG, "dc_wifi_start: %s (continuing; safety loop unaffected)", esp_err_to_name(e));
     else
         pb_netlog_start_time();   // SNTP: log timestamps only, never control
+    pb_metrics_net_init();                   // Wi-Fi disconnect counter (needs the event loop)
     // ESP-NOW peer provider: broadcast our heater capability for consumers (DragonVent).
     // Advisory only; non-fatal like the rest of network bring-up.
     if ((e = pb_peer_start()) != ESP_OK)

@@ -33,6 +33,22 @@ static const char *const k_reset_reasons[PB_METRICS_RESET_REASONS] = {  // esp_r
     "cpu_lockup",
 };
 
+static const char *const k_prusa_states[PB_METRICS_PRUSA_STATES] = {  // dc_prusa_state_t
+    "disabled", "connecting", "online", "auth_failed", "offline",
+};
+static const char *const k_tick_parts[PB_METRICS_TICK_PARTS] = {
+    [PB_METRICS_PART_SOURCE]  = "source",
+    [PB_METRICS_PART_SENSORS] = "sensors",
+    [PB_METRICS_PART_POLICY]  = "policy",
+    [PB_METRICS_PART_HEATER]  = "heater",
+    [PB_METRICS_PART_OTHER]   = "other",
+};
+static const uint32_t k_tick_bounds_us[PB_METRICS_TICK_BUCKETS] = PB_METRICS_TICK_BUCKET_BOUNDS_US;
+// The bounds in seconds, as the "le" label. The host test checks the match.
+static const char *const k_tick_le[PB_METRICS_TICK_BUCKETS] = {
+    "0.0005", "0.001", "0.002", "0.005", "0.01", "0.02", "0.05", "0.1",
+};
+
 #define COUNT_OF(a) (sizeof(a) / sizeof((a)[0]))
 
 const char *pb_metrics_reset_reason_str(unsigned reason)
@@ -94,6 +110,40 @@ void pb_metrics_tick_update(pb_metrics_tick_state_t *st, int64_t start_us,
         if (interval > st->interval_max_us) st->interval_max_us = interval;
     }
     st->prev_start_us = start_us;
+    st->sum_us += duration;
+    for (unsigned i = 0; i < PB_METRICS_TICK_BUCKETS; i++) {
+        if (duration <= k_tick_bounds_us[i]) {
+            st->bucket[i]++;
+            break;
+        }
+    }
+}
+
+void pb_metrics_tick_add_parts(pb_metrics_tick_state_t *st,
+                               const uint32_t part_us[PB_METRICS_TICK_PARTS])
+{
+    if (!st || !part_us) return;
+    for (unsigned i = 0; i < PB_METRICS_TICK_PARTS; i++) st->part_us[i] += part_us[i];
+    st->parts_valid = true;
+}
+
+static uint32_t sub_sat(uint32_t a, uint32_t b)
+{
+    return a > b ? a - b : 0;
+}
+
+void pb_metrics_tick_split(uint32_t tick_us, uint32_t source_us, uint32_t policy_tick_us,
+                           uint32_t heater_tick_us, uint32_t sensors_us,
+                           uint32_t part_us[PB_METRICS_TICK_PARTS])
+{
+    if (!part_us) return;
+    if (heater_tick_us > policy_tick_us) heater_tick_us = policy_tick_us;
+    if (sensors_us > heater_tick_us) sensors_us = heater_tick_us;
+    part_us[PB_METRICS_PART_SOURCE] = source_us;
+    part_us[PB_METRICS_PART_SENSORS] = sensors_us;
+    part_us[PB_METRICS_PART_POLICY] = policy_tick_us - heater_tick_us;
+    part_us[PB_METRICS_PART_HEATER] = heater_tick_us - sensors_us;
+    part_us[PB_METRICS_PART_OTHER] = sub_sat(tick_us, source_us + policy_tick_us);
 }
 
 // ---- streaming writer --------------------------------------------------------
@@ -179,6 +229,16 @@ static void put_tenths(writer_t *w, int32_t v)
     uint64_t mag = v < 0 ? (uint64_t)0 - (uint64_t)(int64_t)v : (uint64_t)v;
     if (v < 0) put(w, "-", 1);
     put_fixed(w, mag, 1);
+}
+
+// "0x" and 8 hex digits.
+static void hex32(char out[11], uint32_t v)
+{
+    static const char hex[] = "0123456789abcdef";
+    out[0] = '0';
+    out[1] = 'x';
+    for (int i = 0; i < 8; i++) out[2 + i] = hex[(v >> (28 - 4 * i)) & 0xF];
+    out[10] = '\0';
 }
 
 // Label value escaping of the text format: backslash, double quote, newline.
@@ -386,11 +446,44 @@ long pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap,
              "Longest time between the starts of two control ticks since boot.",
              s->tick_interval_max_us);
 
+    family(&w, "dragonbreath_control_tick_seconds", "histogram",
+           "Duration of each control tick since boot.");
+    {
+        uint64_t cum = 0;
+        for (unsigned i = 0; i < PB_METRICS_TICK_BUCKETS; i++) {
+            cum += s->tick_bucket[i];
+            sample(&w, "dragonbreath_control_tick_seconds_bucket");
+            label(&w, "le", k_tick_le[i]);
+            end_u64(&w, cum);
+        }
+        sample(&w, "dragonbreath_control_tick_seconds_bucket");
+        label(&w, "le", "+Inf");
+        end_u64(&w, s->ticks);
+        sample(&w, "dragonbreath_control_tick_seconds_sum");
+        end_fixed(&w, s->tick_sum_us, 6);
+        sample(&w, "dragonbreath_control_tick_seconds_count");
+        end_u64(&w, s->ticks);
+    }
+    family(&w, "dragonbreath_control_tick_part_seconds_total", "counter",
+           "Time in each part of the control tick since boot.");
+    if (s->tick_parts_valid) {
+        for (unsigned i = 0; i < PB_METRICS_TICK_PARTS; i++) {
+            sample(&w, "dragonbreath_control_tick_part_seconds_total");
+            label(&w, "part", k_tick_parts[i]);
+            end_fixed(&w, s->tick_part_us[i], 6);
+        }
+    }
+
     gauge_u64(&w, "dragonbreath_heap_free_bytes", "Free heap.", s->heap_free);
     gauge_u64(&w, "dragonbreath_heap_minimum_free_bytes", "Lowest free heap since boot.",
               s->heap_min_free);
     gauge_u64(&w, "dragonbreath_heap_largest_free_block_bytes", "Largest free heap block.",
               s->heap_largest_block);
+
+    counter_u64(&w, "dragonbreath_heap_alloc_failures_total", "Heap allocations that failed since boot.",
+                s->alloc_failures);
+    gauge_u64(&w, "dragonbreath_heap_alloc_failure_last_bytes",
+              "Size of the last allocation that failed. 0 if none.", s->alloc_failure_last_bytes);
 
     unsigned n = s->n_tasks < PB_METRICS_MAX_TASKS ? s->n_tasks : PB_METRICS_MAX_TASKS;
     if (s->task_stack_valid || s->task_cpu_valid) {
@@ -445,6 +538,78 @@ long pb_metrics_format(const pb_metrics_snapshot_t *s, char *buf, size_t cap,
         sample(&w, "dragonbreath_wifi_rssi_dbm");
         end_i64(&w, s->rssi_dbm);
     }
+    counter_u64(&w, "dragonbreath_wifi_disconnects_total",
+                "Wi-Fi station disconnect events since boot (each failed connect attempt counts).",
+                s->wifi_disconnects);
+    gauge_u64(&w, "dragonbreath_wifi_last_disconnect_reason",
+              "wifi_err_reason_t of the last disconnect. 0 if none.", s->wifi_last_reason);
+
+    if (s->prusa_valid) {
+        family(&w, "dragonbreath_prusalink_state", "gauge",
+               "PrusaLink client state. 1 for the current state, 0 for the others.");
+        for (unsigned i = 0; i < PB_METRICS_PRUSA_STATES; i++) {
+            sample(&w, "dragonbreath_prusalink_state");
+            label(&w, "state", k_prusa_states[i]);
+            end_u64(&w, s->prusa_state == i);
+        }
+        family(&w, "dragonbreath_prusalink_status_age_seconds", "gauge",
+               "Age of the last complete PrusaLink status. No sample before the first.");
+        if (s->prusa_status_age_ms != UINT32_MAX) {
+            sample(&w, "dragonbreath_prusalink_status_age_seconds");
+            end_fixed(&w, s->prusa_status_age_ms, 3);
+        }
+    }
+
+    family(&w, "dragonbreath_panics_total", "counter",
+           "Panics found at boot (breadcrumb in RTC RAM), kept in NVS. No sample if NVS failed.");
+    if (s->panics_valid) {
+        sample(&w, "dragonbreath_panics_total");
+        end_u64(&w, s->panics);
+    }
+    family(&w, "dragonbreath_last_panic_info", "gauge",
+           "The last panic breadcrumb as labels. It survives soft resets, not a power cycle.");
+    if (s->last_panic_valid) {
+        const pb_panic_record_t *p = &s->last_panic;
+        char pc[11], ra[11], mcause[11], bt[PB_PANIC_BT_TEXT + 1];
+        hex32(pc, p->pc);
+        hex32(ra, p->ra);
+        hex32(mcause, p->mcause);
+        pb_panic_bt_text(p, bt, sizeof bt);
+        sample(&w, "dragonbreath_last_panic_info");
+        label(&w, "task", p->task);
+        label(&w, "kind", pb_panic_kind_str(p->kind));
+        label(&w, "pc", pc);
+        label(&w, "ra", ra);
+        label(&w, "mcause", mcause);
+        label(&w, "reason", p->reason);
+        label(&w, "backtrace", bt);
+        end_u64(&w, 1);
+    }
+
+    family(&w, "dragonbreath_airflow_rise_ratio", "gauge",
+           "Report-only. Outlet rise / PTC rise over the first 45 s of relay on-time of the last heat start.");
+    if (s->airflow_rise_permille != PB_METRICS_TEMP_UNKNOWN) {
+        sample(&w, "dragonbreath_airflow_rise_ratio");
+        value_begin(&w);
+        int32_t v = s->airflow_rise_permille;
+        if (v < 0) put(&w, "-", 1);
+        put_fixed(&w, v < 0 ? (uint64_t)0 - (uint64_t)(int64_t)v : (uint64_t)v, 3);
+        put(&w, "\n", 1);
+    }
+    counter_u64(&w, "dragonbreath_airflow_rise_samples_total", "Report-only. Rise ratio samples since boot.",
+                s->airflow_rise_samples);
+    family(&w, "dragonbreath_airflow_ptc_cooldown_seconds", "gauge",
+           "Report-only. Last PTC cooldown time constant with the fan on (excess over the chamber to 1/e).");
+    if (s->airflow_cool_tau_ms) {
+        sample(&w, "dragonbreath_airflow_ptc_cooldown_seconds");
+        end_fixed(&w, s->airflow_cool_tau_ms, 3);
+    }
+    counter_u64(&w, "dragonbreath_airflow_ptc_cooldown_samples_total",
+                "Report-only. PTC cooldown samples since boot.", s->airflow_cool_samples);
+    counter_u64(&w, "dragonbreath_heater_foldback_cuts_total",
+                "Element foldback cuts since boot. rate() * 3600 gives cycles per hour.",
+                s->foldback_cuts);
+
     family(&w, "dragonbreath_http_open_sockets", "gauge", "Open client sockets of the HTTP server.");
     if (s->http_sockets >= 0) {
         sample(&w, "dragonbreath_http_open_sockets");

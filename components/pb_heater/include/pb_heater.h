@@ -69,7 +69,14 @@ typedef struct {
     uint32_t trips[PB_FAULT__COUNT];   // index: pb_fault_reason_t
     uint32_t panic_offs;
     uint64_t relay_on_us;              // total SSR on-time, including the current on period
+    uint32_t foldback_cuts;            // element foldback cut edges (one for each cycle)
 } pb_heater_counters_t;
+
+// Timing of the last pb_heater_tick() for the metrics (microseconds).
+typedef struct {
+    uint32_t sensors_us;               // the two pb_ntc_read() calls
+    uint32_t total_us;                 // the whole pb_heater_tick()
+} pb_heater_tick_timing_t;
 
 // Chamber-control method. BANGBANG is the v1.1.15 hysteresis on/off drive (the
 // default); PID is the v1.1.16 dc_pid path with the near-target approach cap.
@@ -495,6 +502,9 @@ void pb_heater_notify_link_alive(void);
 // The caller must hold the policy lock (pb_policy_tick does), so that a tick
 // cannot run between the NVS clear and the RAM clear of pb_heater_clear_fault().
 void pb_heater_tick(void);
+
+// Control task only: the timing of the last pb_heater_tick().
+void pb_heater_get_tick_timing(pb_heater_tick_timing_t *out);
 
 // Immediate, latching shutoff. Clears the target and latches off. Heat stays off
 // until pb_heater_clear_fault() is called AND the condition has cleared.

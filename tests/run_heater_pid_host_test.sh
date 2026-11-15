@@ -2,23 +2,18 @@
 set -eu
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-tmp="${TMPDIR:-/tmp}/dragonbreath-dc-pid"
-out="${TMPDIR:-/tmp}/dragonbreath-pb-heater-pid-test"
-
 # Keep host coverage on the exact released dependency used by the firmware
-# manifest.
-dc_pid_version=v0.32.0
-base="https://raw.githubusercontent.com/justinh-rahb/dragon-core/$dc_pid_version/components/dc_pid"
-mkdir -p "$tmp/include"
-curl -fsSL "$base/include/dc_pid.h" -o "$tmp/include/dc_pid.h"
-curl -fsSL "$base/dc_pid.c" -o "$tmp/dc_pid.c"
+# manifest (tests/fetch_dc_pid.sh reads the version from main/idf_component.yml).
+dc_pid="$(sh "$root/tests/fetch_dc_pid.sh")"
+out="$(mktemp "${TMPDIR:-/tmp}/dragonbreath-pb-heater-pid-test.XXXXXX")"
+trap 'rm -f "$out"' EXIT
 
-cc -std=c11 -Wall -Wextra -Werror \
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror ${HOST_TEST_CFLAGS:-} \
   -I"$root/components/pb_heater/include" \
   -I"$root/tests/stubs" \
-  -I"$tmp/include" \
+  -I"$dc_pid/include" \
   "$root/tests/pb_heater_pid_host_test.c" \
-  "$tmp/dc_pid.c" \
+  "$dc_pid/dc_pid.c" \
   -lm -o "$out"
 
 "$out"

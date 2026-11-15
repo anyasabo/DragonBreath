@@ -49,6 +49,16 @@ if(DB_IDF_SEMVER VERSION_LESS "5.3.2")
         "DragonBreath requires ESP-IDF v5.3.2 or newer: older releases can "
         "concurrently process sockets owned by asynchronous HTTP requests")
 endif()
+# CI and release builds use the ESP-IDF tag in .idf-version. Warn if this build differs.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.idf-version")
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/.idf-version" DB_IDF_PINNED LIMIT_COUNT 1)
+    string(STRIP "${DB_IDF_PINNED}" DB_IDF_PINNED)
+    string(REGEX REPLACE "^v" "" DB_IDF_PINNED_SEMVER "${DB_IDF_PINNED}")
+    if(NOT DB_IDF_SEMVER VERSION_EQUAL DB_IDF_PINNED_SEMVER)
+        message(WARNING "ESP-IDF ${DB_IDF_VERSION} differs from .idf-version (${DB_IDF_PINNED}), "
+                        "the version of the CI and release builds")
+    endif()
+endif()
 
 # E1 (Phase E) — warnings-as-errors for OUR OWN first-party components only.
 # Applied here (after project(), when the per-component library targets exist) as a

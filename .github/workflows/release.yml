@@ -26,7 +26,13 @@ jobs:
           fetch-depth: 0
 
       - name: Read ESP-IDF version
-        run: echo "IDF_VERSION=$(tr -d '[:space:]' < .idf-version)" >> "$GITHUB_ENV"
+        run: |
+          v="$(tr -d '[:space:]' < .idf-version)"
+          if ! printf '%s\n' "$v" | grep -Eq '^v[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::error file=.idf-version::'$v' is not an ESP-IDF tag (vX.Y or vX.Y.Z)"
+            exit 1
+          fi
+          echo "IDF_VERSION=$v" >> "$GITHUB_ENV"
 
       - name: Determine version
         id: ver

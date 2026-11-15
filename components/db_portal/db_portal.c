@@ -985,6 +985,11 @@ esp_err_t db_portal_start(void)
 {
     httpd_config_t httpd = HTTPD_DEFAULT_CONFIG();
     httpd.lru_purge_enable = true;
+    // The httpd task serves one request at a time, and each socket receive or
+    // send waits up to these timeouts. The ESP-IDF default is 5 s. A shorter wait
+    // limits how long a slow or stalled LAN client holds the task.
+    httpd.recv_wait_timeout = 3;
+    httpd.send_wait_timeout = 3;
     httpd.max_uri_handlers = 48;
     httpd.stack_size = 8192;
     httpd.keep_alive_enable = true;

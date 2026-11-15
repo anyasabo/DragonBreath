@@ -124,6 +124,9 @@ below into the GitHub Release notes.
 - The replay cache of `POST /api/v2/command` keeps its two responses on the
   heap, not in a fixed 6.4 KB static buffer. This gives 6.1 KB of RAM back
   before the first command. A cached response is not cut at 3 KB any more.
+- The HTTP server waits at most 3 s (was the ESP-IDF default of 5 s) for each
+  socket receive and send. The server has one task, so a slow or stalled LAN
+  client now holds it for a shorter time.
 
 ### Fixed
 - **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or

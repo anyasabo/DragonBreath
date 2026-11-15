@@ -426,6 +426,24 @@ CC=clang-23 HOST_TEST_CFLAGS="-fsanitize=address,undefined -fno-sanitize-recover
   sh tests/run_host_tests.sh
 ```
 
+### Static checks on the ELF
+
+```bash
+./tools/idf-build.sh . esp32c3 build-stack -DDB_STACK_USAGE=ON build
+python3 tools/elf_check.py --stack --paths build-stack/dragonbreath.elf
+python3 tools/ram_treemap.py -o ram.svg build-stack/dragonbreath.map
+```
+
+`elf_check.py` lists each call that the control task can reach and that logs,
+formats with printf, uses soft `double` math, can block, or allocates. It also
+lists each call through a function pointer, because it cannot follow one. With
+`--ci`, it fails on a call that is not in `tools/elf_check_allowlist.txt`, or on
+more call sites than the allowlist count.
+`--stack` adds the worst-case stack of each task from the `-fstack-usage` data.
+Recursion, indirect calls and code without `.su` data (ROM, prebuilt
+libraries) make a stack value a lower bound. `ram_treemap.py` shows the static
+RAM of each component and variable from the linker map.
+
 ## Layout
 ```
 components/

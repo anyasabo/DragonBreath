@@ -16,6 +16,8 @@ on:
       - 'tools/smoke.py'
       - 'tools/idf-build.sh'
       - '.idf-version'
+      - 'tools/elf_check*'
+      - 'tools/ram_treemap.py'
       - '.github/workflows/firmware-build.yml'
   pull_request:
     paths:
@@ -31,6 +33,8 @@ on:
       - 'tools/smoke.py'
       - 'tools/idf-build.sh'
       - '.idf-version'
+      - 'tools/elf_check*'
+      - 'tools/ram_treemap.py'
   workflow_dispatch:
 
 # Least-privilege GITHUB_TOKEN: the build only needs to read code and upload
@@ -176,6 +180,9 @@ jobs:
       - name: Test capture, analysis and replay tools
         run: python3 -m unittest tests/test_capture_tools.py
 
+      - name: Test ELF check and RAM treemap tools
+        run: python3 -m unittest tests/test_elf_tools.py
+
       # E1 static analysis: cppcheck over OUR OWN code (components/ + main/). Fails on
       # any error/warning/performance/portability finding (--error-exitcode). The C
       # `error` checks are always on. False positives cppcheck's parser cannot model
@@ -274,6 +281,32 @@ jobs:
       - name: Check that the production build enforces the first-heat check
         run: sh tests/check_first_heat_enforced.sh build
 
+      # Static checks on the release ELF: the calls that the control task can
+      # reach (log, printf, soft double, blocking, malloc) against the allowlist,
+      # the worst-case stack of each task (-fstack-usage), and a RAM treemap.
+      - name: Static ELF checks on the release profile (ESP-IDF ${{ env.IDF_VERSION }})
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          target: esp32c3
+          path: '.'
+          extra_docker_args: >-
+            -e CCACHE_MAXSIZE=500M
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
+          command: |
+            set -e
+            idf.py -B build-release-check \
+              -DSDKCONFIG="$PWD/build-release-check/sdkconfig.profile" \
+              -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.release" \
+              -DDB_STACK_USAGE=ON \
+              build
+            python3 tools/elf_check.py --ci --stack \
+              --allowlist tools/elf_check_allowlist.txt \
+              build-release-check/dragonbreath.elf
+            python3 tools/ram_treemap.py --top 30 \
+              -o build-release-check/ram-treemap.svg \
+              build-release-check/dragonbreath.map
+
       - name: Build safe dev-board HIL profile (ESP-IDF ${{ env.IDF_VERSION }})
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
@@ -366,6 +399,7 @@ jobs:
             build-hil-devboard/dragonbreath.bin
             build-hil-devboard-uart/dragonbreath.bin
             build-debug-devboard-native/dragonbreath.bin
+            build-release-check/ram-treemap.svg
           if-no-files-found: warn
 
   # A separate job, so an ESP-IDF 6 failure does not stop the v5.3.5 builds

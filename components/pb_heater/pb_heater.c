@@ -40,6 +40,7 @@ static bool        s_on;            // written only by the control task; atomic 
 // Metrics counters since boot (read by pb_heater_get_counters).
 static uint32_t    s_trips[PB_FAULT__COUNT]; // guarded by s_mux; trips by cause
 static uint32_t    s_trip_causes;   // guarded by s_mux; causes counted in this latch episode
+_Static_assert(PB_FAULT__COUNT <= 32, "s_trip_causes is a 32-bit mask of pb_fault_reason_t");
 static uint32_t    s_panic_offs;    // guarded by s_mux
 static int64_t     s_relay_on_us;   // guarded by s_mux; completed SSR on-time
 static int64_t     s_relay_since_us; // guarded by s_mux; start of the current on period
@@ -579,11 +580,15 @@ bool pb_heater_is_on(void) { return s_on; }                 // atomic bool read
 void pb_heater_get_counters(pb_heater_counters_t *out)
 {
     if (!out) return;
-    int64_t now = esp_timer_get_time();
     taskENTER_CRITICAL(&s_mux);
+    // Read the clock inside the lock: ssr_set(true) cannot then start a new on
+    // period after `now`, so the open period is never negative and the total
+    // never decreases between two reads. The clamp is a second guard.
+    int64_t now = esp_timer_get_time();
     memcpy(out->trips, s_trips, sizeof out->trips);
     out->panic_offs = s_panic_offs;
-    int64_t on_us = s_relay_on_us + (s_on ? now - s_relay_since_us : 0);
+    int64_t open_us = s_on ? now - s_relay_since_us : 0;
+    int64_t on_us = s_relay_on_us + (open_us > 0 ? open_us : 0);
     taskEXIT_CRITICAL(&s_mux);
     out->relay_on_us = on_us > 0 ? (uint64_t)on_us : 0;
 }

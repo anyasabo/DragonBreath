@@ -57,7 +57,9 @@ typedef struct {
 // Metrics counters since boot. A trip counts once for each cause in a latch
 // episode: a held over-temperature does not count again on each tick, but a new
 // cause during an active latch counts. A fault clear starts a new episode. The
-// boot restore of a persisted latch is not counted. Panic-offs count each request.
+// boot restore of a persisted latch is not counted. But if the hazard is still
+// present after the reboot, the first tick trips live and counts it once more.
+// Panic-offs count each request.
 typedef struct {
     uint32_t trips[PB_FAULT__COUNT];   // index: pb_fault_reason_t
     uint32_t panic_offs;
@@ -313,6 +315,8 @@ void pb_heater_notify_link_alive(void);
 // enforces all safety cutoffs from those local sensors, and drives the SSR from
 // the shared dc_pid controller using the optional external regulation temperature
 // when one is supplied (otherwise the local chamber NTC is the process variable).
+// The caller must hold the policy lock (pb_policy_tick does), so that a tick
+// cannot run between the NVS clear and the RAM clear of pb_heater_clear_fault().
 void pb_heater_tick(void);
 
 // Immediate, latching shutoff. Clears the target and latches off. Heat stays off
@@ -338,6 +342,9 @@ void pb_heater_request_panic_off(const char *reason);
 //   other                 - the RAM latch was cleared but persisting the clear
 //                           FAILED (so it would return on reboot); callers should
 //                           surface this (HTTP 500) rather than report success.
+// The caller must hold the policy lock (pb_policy_clear_fault does), the same
+// lock as pb_heater_tick(). Else a trip between the NVS clear and the RAM clear
+// is lost: RAM clears it and NVS does not hold it.
 esp_err_t pb_heater_clear_fault(void);
 
 // PERMANENT inhibit: force the heater off and refuse all heat until reboot. Unlike

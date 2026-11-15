@@ -7,6 +7,13 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- `sdkconfig.profile-devboard`: a profiling overlay for the dev board (ESP-IDF
+  v6.1) with frame pointers, standalone heap tracing with 10 callers, and
+  debugger-aware panics. `tools/jtag_profile.py` samples the stack over JTAG
+  through OpenOCD and writes folded stacks for a flame graph. See
+  `docs/PROFILING.md`. Release and dev builds do not change.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

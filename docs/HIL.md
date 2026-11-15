@@ -102,6 +102,9 @@ sh tests/check_devboard_compileout.sh build-debug-devboard-native
 idf.py -B build-debug-devboard-native -p /dev/ttyACM0 flash monitor
 ```
 
+For frame pointers, heap tracing and a flame graph over JTAG (ESP-IDF v6.1),
+add the `sdkconfig.profile-devboard` overlay. See [PROFILING.md](PROFILING.md).
+
 This profile is for development boards only. Do not flash it onto a Panda Breath:
 its physical sensors, buttons, LEDs, fan, and heater are intentionally unavailable.
 

@@ -159,6 +159,26 @@ jobs:
               build
             sh tests/check_devboard_compileout.sh build-debug-devboard-native
 
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dragonbreath-firmware
+          path: |
+            build/dragonbreath.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build-hil-devboard/dragonbreath.bin
+            build-hil-devboard-uart/dragonbreath.bin
+            build-debug-devboard-native/dragonbreath.bin
+          if-no-files-found: warn
+
+  # A separate job, so an ESP-IDF 6 failure does not stop the v5.3.5 builds
+  # and their artifact upload.
+  build-idf6:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       # ESP-IDF 6 moved cJSON to the component registry and uses Mbed TLS 4,
       # Picolibc and GCC 15. This build keeps the firmware compatible with it.
       # Release builds still use ESP-IDF v5.3.5.
@@ -174,16 +194,3 @@ jobs:
               -DSDKCONFIG="$PWD/build-idf6-release/sdkconfig.profile" \
               -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.release" \
               build
-
-      - name: Upload firmware artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: dragonbreath-firmware
-          path: |
-            build/dragonbreath.bin
-            build/bootloader/bootloader.bin
-            build/partition_table/partition-table.bin
-            build-hil-devboard/dragonbreath.bin
-            build-hil-devboard-uart/dragonbreath.bin
-            build-debug-devboard-native/dragonbreath.bin
-          if-no-files-found: warn

@@ -142,10 +142,14 @@ jobs:
         env:
           NVDAPIKEY: ${{ secrets.NVDAPIKEY }}
         run: |
+          # check exits 1 if it finds a CVE. Keep the code for the summary.
+          rc=0
           pipx run esp-idf-sbom==1.5.0 --no-color --no-progress --no-hint \
-            check --format markdown -o build/sbom-check.md build/dragonbreath.spdx
+            check --format markdown -o build/sbom-check.md build/dragonbreath.spdx || rc=$?
           {
             echo '## SBOM vulnerability check (report only)'
+            echo
+            echo "esp-idf-sbom check exit code: $rc"
             echo
             echo '| status | severity | package | version | CVE |'
             echo '|---|---|---|---|---|'

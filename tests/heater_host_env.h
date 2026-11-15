@@ -77,6 +77,7 @@ typedef struct {
     int nvs_fail_set_nth;        // N > 0: the Nth set on each open handle fails (ESP_FAIL)
     esp_err_t nvs_fail_commit;   // opt-in: commit returns this, the sets are already in flash
     unsigned nvs_commits;
+    unsigned nvs_sets;           // nvs_set_* calls (flash wear), failed ones included
 
     // Sensor inputs for the pb_ntc API stub (heater tick test only).
     int ntc_status[2];           // pb_ntc_status_t, indexed by pb_ntc_channel_t

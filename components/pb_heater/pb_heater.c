@@ -35,9 +35,9 @@ static pb_fault_reason_t s_fault_code; // guarded by s_mux (machine-readable, pe
 static bool        s_persist_pending;  // guarded by s_mux — a latch persist not yet committed
                                        // to NVS; retried from pb_heater_tick until it lands
 static int64_t     s_persist_retry_us; // guarded by s_mux — last persist-retry timestamp
-static bool        s_latch_persisted;  // guarded by s_mux — the current latch has a cause that
-                                       // belongs in NVS (written, or pending a retry)
-static pb_fault_reason_t s_persist_code; // guarded by s_mux — the code that NVS holds / must hold
+static pb_fault_reason_t s_persist_code; // guarded by s_mux — the cause of the current latch
+                                         // that NVS holds or must hold (written, or pending a
+                                         // retry); PB_FAULT_NONE = this latch is not for NVS
 static bool        s_on;            // written only by the control task; atomic read
 static pb_heater_pid_state_t s_pid; // control-task only — shared dc_pid state + SSR window
 static float       s_commanded_duty; // guarded by s_mux; PID output after approach limit
@@ -162,7 +162,7 @@ esp_err_t pb_heater_init(void)
     s_target_c = 0.0f;
     s_control_chamber_c = NAN;
     s_latched_off = false;
-    s_latch_persisted = false;
+    s_persist_code = PB_FAULT_NONE;
     s_fault_reason = NULL;
     s_fault_code = PB_FAULT_NONE;
     s_last_link_us = esp_timer_get_time();
@@ -440,24 +440,36 @@ static esp_err_t persist_fault(bool latched, pb_fault_reason_t code)
     return err;
 }
 
+// The hazard-driven causes of SAFETY.md ("Persistent fault latch").
+static bool is_hazard(pb_fault_reason_t code)
+{
+    return code == PB_FAULT_PTC_OVERTEMP || code == PB_FAULT_CHAMBER_OVERTEMP ||
+           code == PB_FAULT_CHAMBER_SENSOR || code == PB_FAULT_PTC_SENSOR ||
+           code == PB_FAULT_LINK_LOST;
+}
+
+typedef enum {
+    LATCH_RAM_ONLY,      // panic-off, permanent inhibit, boot NVS_UNREADABLE: never written
+    LATCH_PERSIST,       // hazard trips and emergency_off: written to NVS
+    LATCH_FROM_NVS,      // boot restore: NVS already holds it
+} latch_nvs_t;
+
 // Latch the heater off with a machine-readable code + live reason string. Sets RAM
-// under the lock, then persists it if persist==true and the current latch is not
-// persisted yet — also when a hazard trips on top of a RAM-only latch (panic-off,
-// inhibit, the boot NVS_UNREADABLE latch). persist==false leaves NVS untouched —
-// used for the reboot-restore path (already in NVS), panic-off and the permanent
-// inhibit, whose "a reboot clears it" semantics must not survive a power cycle.
-// drive_ssr is CONTROL-TASK ONLY (it writes the GPIO).
+// under the lock, then, for LATCH_PERSIST, writes NVS if NVS does not hold this
+// latch yet — also when a hazard trips on top of a RAM-only latch — or if a hazard
+// cause replaces a persisted non-hazard cause (emergency_off). So an episode writes
+// NVS at most twice, and repeated trips while hot do not write it. LATCH_RAM_ONLY
+// leaves NVS untouched: panic-off and the permanent inhibit must clear on a power
+// cycle. drive_ssr is CONTROL-TASK ONLY (it writes the GPIO).
 static void do_latch(pb_fault_reason_t code, const char *reason,
-                     bool inhibit, bool drive_ssr, bool persist)
+                     bool inhibit, bool drive_ssr, latch_nvs_t nvs)
 {
     if (drive_ssr) ssr_set(false);
     bool write;
     taskENTER_CRITICAL(&s_mux);
-    write = persist && !s_latch_persisted;       // NVS does not hold this latch yet?
-    if (write) {
-        s_latch_persisted = true;
-        s_persist_code = code;
-    }
+    write = nvs == LATCH_PERSIST &&
+            (s_persist_code == PB_FAULT_NONE || (is_hazard(code) && !is_hazard(s_persist_code)));
+    if (write || nvs == LATCH_FROM_NVS) s_persist_code = code;
     s_target_c = 0.0f;
     s_latched_off = true;
     if (inhibit) s_inhibited = true;
@@ -470,14 +482,18 @@ static void do_latch(pb_fault_reason_t code, const char *reason,
     if (write) {
         if (s_persist_lock) xSemaphoreTake(s_persist_lock, portMAX_DELAY);
         esp_err_t pe = persist_fault(true, code);
-        if (s_persist_lock) xSemaphoreGive(s_persist_lock);
         if (pe != ESP_OK) {
             // The write failed (NVS busy, or a fault before nvs_init on early boot).
             // Mark it pending so pb_heater_tick() keeps retrying until it commits —
             // otherwise a reboot would lose a latch that only ever lived in RAM.
+            // Set it before the persist lock is released, so a clear that takes
+            // the lock next also drops the pending retry.
             taskENTER_CRITICAL(&s_mux);
             s_persist_pending = true;
             taskEXIT_CRITICAL(&s_mux);
+        }
+        if (s_persist_lock) xSemaphoreGive(s_persist_lock);
+        if (pe != ESP_OK) {
             ESP_LOGW(TAG, "fault persist deferred (will retry): %s", pb_heater_fault_str(code));
         }
     }
@@ -486,13 +502,13 @@ static void do_latch(pb_fault_reason_t code, const char *reason,
 // Control-task safety trip: latch (driving the SSR down) + persist + log.
 static void trip(pb_fault_reason_t code)
 {
-    do_latch(code, NULL, /*inhibit=*/false, /*drive_ssr=*/true, /*persist=*/true);
+    do_latch(code, NULL, /*inhibit=*/false, /*drive_ssr=*/true, LATCH_PERSIST);
     ESP_LOGW(TAG, "EMERGENCY OFF: %s", pb_heater_fault_str(code));
 }
 
 void pb_heater_emergency_off(const char *reason)   // control-task context
 {
-    do_latch(PB_FAULT_EMERGENCY, reason, /*inhibit=*/false, /*drive_ssr=*/true, /*persist=*/true);
+    do_latch(PB_FAULT_EMERGENCY, reason, /*inhibit=*/false, /*drive_ssr=*/true, LATCH_PERSIST);
     ESP_LOGW(TAG, "EMERGENCY OFF: %s", reason ? reason : "(unspecified)");
 }
 
@@ -503,9 +519,9 @@ void pb_heater_request_panic_off(const char *reason)   // any task
     // single-SSR-writer invariant by leaving the actual ssr_set(false) to the
     // next pb_heater_tick() on the control task. Callers that need the SSR down
     // fast should wake the control task immediately after this returns.
-    // persist=false: a user panic-off is a manual stop, documented to clear on
+    // LATCH_RAM_ONLY: a user panic-off is a manual stop, documented to clear on
     // reboot (only hazard-driven trips — over-temp/sensor/comms — persist).
-    do_latch(PB_FAULT_PANIC_OFF, reason, /*inhibit=*/false, /*drive_ssr=*/false, /*persist=*/false);
+    do_latch(PB_FAULT_PANIC_OFF, reason, /*inhibit=*/false, /*drive_ssr=*/false, LATCH_RAM_ONLY);
 }
 
 esp_err_t pb_heater_clear_fault(void)
@@ -528,13 +544,18 @@ esp_err_t pb_heater_clear_fault(void)
     if (s_persist_lock) xSemaphoreTake(s_persist_lock, portMAX_DELAY);
     esp_err_t err = persist_fault(false, PB_FAULT_NONE);
     if (err != ESP_OK) {
+        // A failure part way can leave the code key cleared. Let the tick retry
+        // write the latch and its cause again.
+        taskENTER_CRITICAL(&s_mux);
+        if (s_persist_code != PB_FAULT_NONE) s_persist_pending = true;
+        taskEXIT_CRITICAL(&s_mux);
         if (s_persist_lock) xSemaphoreGive(s_persist_lock);
         ESP_LOGE(TAG, "clear rejected: NVS clear failed (%s) — fault stays latched", esp_err_to_name(err));
         return err;
     }
     taskENTER_CRITICAL(&s_mux);
     s_latched_off = false;
-    s_latch_persisted = false;
+    s_persist_code = PB_FAULT_NONE;
     s_target_c = 0.0f;              // reset leaves the target at ZERO — a fresh
     s_fault_reason = NULL;          // target command is required to resume heating.
     s_fault_code = PB_FAULT_NONE;
@@ -547,10 +568,10 @@ esp_err_t pb_heater_clear_fault(void)
 
 void pb_heater_inhibit(const char *reason)
 {
-    // Permanent (reboot-only) -> persist=false: a power cycle must lift it, so
+    // Permanent (reboot-only) -> LATCH_RAM_ONLY: a power cycle must lift it, so
     // persisting could brick the device across reboots on a transient init failure.
     // Any clearable latch already in NVS is left intact.
-    do_latch(PB_FAULT_INHIBITED, reason, /*inhibit=*/true, /*drive_ssr=*/true, /*persist=*/false);
+    do_latch(PB_FAULT_INHIBITED, reason, /*inhibit=*/true, /*drive_ssr=*/true, LATCH_RAM_ONLY);
     ESP_LOGE(TAG, "HEATER INHIBITED (reboot-only): %s", reason ? reason : "(unspecified)");
 }
 
@@ -593,17 +614,12 @@ void pb_heater_load_fault(void)
     bool latched = pb_heater_fault_decide(open_ok, ns_not_found, latch_read_ok,
                                           latch_not_found, latch_val, code_val, &code);
     if (latched) {
-        // persist=false (already in NVS, or unreadable); drive_ssr=false (init()
+        // No NVS write (already in NVS, or unreadable); drive_ssr=false (init()
         // already forced the SSR off and the control task is not running yet).
-        do_latch(code, NULL, /*inhibit=*/false, /*drive_ssr=*/false, /*persist=*/false);
-        if (code != PB_FAULT_NVS_UNREADABLE) {
-            // Restored from NVS, so NVS already holds it. An unreadable store does
-            // not: a later hazard trip must still write its latch.
-            taskENTER_CRITICAL(&s_mux);
-            s_latch_persisted = true;
-            s_persist_code = code;
-            taskEXIT_CRITICAL(&s_mux);
-        }
+        // An unreadable store does not hold the latch: a later hazard trip must
+        // still write it.
+        do_latch(code, NULL, /*inhibit=*/false, /*drive_ssr=*/false,
+                 code == PB_FAULT_NVS_UNREADABLE ? LATCH_RAM_ONLY : LATCH_FROM_NVS);
         ESP_LOGW(TAG, "boot: restored latched fault: %s", pb_heater_fault_str(code));
     }
 }
@@ -634,8 +650,8 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
         taskEXIT_CRITICAL(&s_mux);
         if (due && s_persist_lock && xSemaphoreTake(s_persist_lock, 0) == pdTRUE) {
             taskENTER_CRITICAL(&s_mux);
-            bool still = s_latched_off;
             pb_fault_reason_t code = s_persist_code;   // the hazard, not a later panic-off
+            bool still = code != PB_FAULT_NONE;         // a clear sets NONE: nothing to write
             s_persist_retry_us = now;
             taskEXIT_CRITICAL(&s_mux);
             esp_err_t pr = still ? persist_fault(true, code) : ESP_OK;  // cleared -> nothing to write

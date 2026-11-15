@@ -89,6 +89,7 @@ typedef struct {
 
     // Oracle state (expected values, from SAFETY.md and pb_heater.h).
     bool faulted, inhibited, expect_persist;
+    int exp_cause;                 // the cause that NVS must hold (PB_FAULT_NONE: none)
     float exp_target, exp_max, exp_fb_cut;
     uint32_t exp_comms_ms;
     int exp_method;
@@ -254,11 +255,34 @@ static void check_settings(void)
     RCHECK(cr >= 30.0f && cr <= 65.0f, "cool_release outside [30, 65]");
 }
 
+// The cause that a boot restores from the stored code (pb_heater_fault_decide).
+static int nvs_restored_cause(void)
+{
+    int c = nvs_u("fault_code");
+    return (c > PB_FAULT_NONE && c < PB_FAULT__COUNT) ? c : PB_FAULT_EMERGENCY;
+}
+
+static bool oracle_hazard(int code)
+{
+    return code == PB_FAULT_PTC_OVERTEMP || code == PB_FAULT_CHAMBER_OVERTEMP ||
+           code == PB_FAULT_CHAMBER_SENSOR || code == PB_FAULT_PTC_SENSOR ||
+           code == PB_FAULT_LINK_LOST;
+}
+
+// True if this latch must write NVS: NVS does not hold the latch yet, or a
+// hazard cause replaces a persisted non-hazard cause (emergency_off).
+static bool oracle_writes(pb_fault_reason_t code, bool persists)
+{
+    return persists && (W->exp_cause == PB_FAULT_NONE ||
+                        (oracle_hazard(code) && !oracle_hazard(W->exp_cause)));
+}
+
 static void latch_oracle(pb_fault_reason_t code, bool persists)
 {
+    if (oracle_writes(code, persists)) W->exp_cause = code;
     W->faulted = true;
     W->exp_target = 0.0f;
-    if (persists) W->expect_persist = true;
+    W->expect_persist = W->exp_cause != PB_FAULT_NONE;
     (void)code;
 }
 
@@ -300,11 +324,11 @@ static void one_tick(void)
         if (!pre_faulted && nvs_writes_work())
             RCHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == (int)trip,
                    "trip %d was not persisted although NVS works", (int)trip);
-        // A hazard trip on top of a RAM-only latch (panic-off, inhibit, the
-        // boot NVS_UNREADABLE latch) must persist too.
-        if (pre_faulted && !W->expect_persist && nvs_writes_work())
+        // Also on top of a RAM-only latch (panic-off, inhibit, the boot
+        // NVS_UNREADABLE latch), or replacing a persisted emergency_off cause.
+        if (oracle_writes(trip, true) && nvs_writes_work())
             RCHECK(nvs_u("fault_latch") == 1 && nvs_u("fault_code") == (int)trip,
-                   "trip %d on top of a RAM-only latch was not persisted", (int)trip);
+                   "trip %d was not persisted (NVS cause was %d)", (int)trip, W->exp_cause);
         latch_oracle(trip, true);
     } else {
         if (pre_faulted || !armed) {
@@ -362,8 +386,9 @@ static void one_tick(void)
     }
 
     // Durability: a latch that must persist lands within 2 s of NVS recovery.
-    if (W->expect_persist && nvs_u("fault_latch") != 1 && nvs_writes_work() &&
-        env->now_us - W->nvs_healthy_since_us > 2000000)
+    if (W->expect_persist && nvs_writes_work() &&
+        env->now_us - W->nvs_healthy_since_us > 2000000 &&
+        (nvs_u("fault_latch") != 1 || nvs_restored_cause() != W->exp_cause))
         rfail(__LINE__, "pending fault persist did not land 2 s after NVS recovered");
 
     check_settings();
@@ -421,6 +446,7 @@ static void act_clear(void)
         W->faulted = false;
         W->exp_target = 0.0f;
         W->expect_persist = false;
+        W->exp_cause = PB_FAULT_NONE;
         W->clears_ok++;
     }
 }
@@ -438,13 +464,13 @@ static void act_panic(void)
 
 static void act_emergency(void)
 {
-    bool in_nvs = W->expect_persist;
+    bool writes = oracle_writes(PB_FAULT_EMERGENCY, true);
     env->ctx = CTX_CONTROL;
     pb_heater_emergency_off("random emergency");
     env->ctx = CTX_OTHER;
     env_check_quiescent();
     RCHECK(relay() == 0, "emergency_off left the relay on");
-    if (!in_nvs && nvs_writes_work())
+    if (writes && nvs_writes_work())
         RCHECK(nvs_u("fault_latch") == 1, "emergency_off was not persisted");
     latch_oracle(PB_FAULT_EMERGENCY, true);
 }
@@ -698,7 +724,13 @@ static void oracle_boot(void)
     W->faulted = latched;
     W->inhibited = false;
     W->exp_target = 0.0f;
-    W->expect_persist = env_nvs_read("fault_latch", &v) && v == 1;
+    // The firmware treats a latch it restored from NVS as written. After a read
+    // failure (NVS_UNREADABLE) it treats the latch as not written.
+    W->exp_cause = PB_FAULT_NONE;
+    if (latched && !env->nvs_fail_open_ro && !env->nvs_fail_get) {
+        W->exp_cause = nvs_restored_cause();
+    }
+    W->expect_persist = W->exp_cause != PB_FAULT_NONE;
     W->fb = W->local = false;
     W->ext_ctrl = NAN;
     W->last_link_us = env->now_us;

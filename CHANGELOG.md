@@ -7,6 +7,12 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Changed
+- The firmware also builds with ESP-IDF v6.1. Release builds continue to use
+  ESP-IDF v5.3.5. ESP-IDF 6 builds get cJSON from the component registry and
+  use the split `esp_driver_*` components. They need a dragon-core version
+  with ESP-IDF 6 support.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

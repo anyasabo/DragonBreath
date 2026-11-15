@@ -140,6 +140,7 @@ without touching the firmware.
 | Control source (`dc_source`) | ✅ Single-select on `/setup`: Klipper/Moonraker (default) · Klipper MQTT · Home Assistant MQTT Discovery · Bambu LAN MQTT · PrusaLink; optional HA telemetry remains read-only when another source controls heat |
 | On-device diagnostics pages | ✅ `/diag` (live SSE telemetry + trend + CSV) and `/console` (firmware `ESP_LOGx` viewer via auth-gated `GET /api/v2/console`) — shipped v0.8.0 |
 | Diagnostics (`tools/diag.py`) | ✅ Read-only 2 Hz logger (chamber/PTC/SSR/mode/fault + resolved Rref) → live view + CSV; run during a heat cycle to capture behavior. `python3 tools/diag.py [host] [token]` |
+| Captures (`tools/capture.py`, `tools/analyze_capture.py`) | Scenario recorder (read-only by default), offline analysis (first heat, sensor agreement, airflow, PID fit) and replay. See [`docs/CAPTURES.md`](docs/CAPTURES.md) |
 
 **Shared-core boundary:** board-agnostic infrastructure is consumed from the pinned
 [`dragon-core`](https://github.com/justinh-rahb/dragon-core) revision declared in

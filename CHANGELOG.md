@@ -7,6 +7,15 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- Capture kit for hardware tests (tools only, no firmware change): `tools/capture.py`
+  records named scenarios (`idle`, `first-heat`, `step`, `cooldown`, `soak`), read-only
+  unless `--allow-control --token` is given. `tools/analyze_capture.py` computes the
+  first-heat rise, cold sensor agreement, airflow signs, a PID fit and control health.
+  `tools/replay_capture.py` checks a capture against the safety invariants and a model
+  of the bang-bang tick. `tools/priors.py` prints the expected values. See
+  `docs/CAPTURES.md`.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

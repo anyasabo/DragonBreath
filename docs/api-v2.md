@@ -26,11 +26,12 @@ These routes check the `X-DragonBreath-Auth` header:
 
 These routes do **not** check the header:
 
-- `GET /api/v1/provisioning` and `POST /api/v1/provisioning/wifi`: if the device
-  started in the setup portal (no saved Wi-Fi credentials, or a failed join at
-  boot), they are open. This is by design: a new device has no token. In station mode, they check
-  the header.
-- `POST /api/v1/provisioning/scan` (a Wi-Fi scan). This is a gap in dragon-core.
+- `GET /api/v1/provisioning`, `POST /api/v1/provisioning/wifi` and
+  `POST /api/v1/provisioning/scan` (a Wi-Fi scan): they are open while the
+  device is in the setup portal. If the device has no saved Wi-Fi credentials,
+  or if the join at boot fails, the device starts in the setup portal. This is by design: a
+  new device has no token. In station mode, they check the header. After a late Wi-Fi join,
+  they also check the header.
 - All other `GET` routes: the pages, `/api/v2/info`, `/state`, `/events`, `/health`,
   `/logs`, `/calibration`, `/zones`, `/heater_method`, `/presets`,
   `/bambu/discovered`, `/km-config` and `/diag`.

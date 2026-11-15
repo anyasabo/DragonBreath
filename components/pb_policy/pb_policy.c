@@ -131,10 +131,17 @@ static bool source_is_remote(db_source_t source)
     return source == DB_SOURCE_WEB || source == DB_SOURCE_KLIPPER;
 }
 
+// Bounded string copy. No snprintf: pb_policy_get_snapshot() runs in the
+// control task (each 2 s for the status line).
 static void copy_text(char *dst, size_t dst_size, const char *src)
 {
     if (!dst || dst_size == 0) return;
-    snprintf(dst, dst_size, "%s", src ? src : "");
+    size_t n = 0;
+    if (src) {
+        while (n + 1 < dst_size && src[n] != '\0') n++;
+        memcpy(dst, src, n);
+    }
+    dst[n] = '\0';
 }
 
 static void revision_advance_locked(db_source_t source)

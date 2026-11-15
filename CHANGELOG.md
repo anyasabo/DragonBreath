@@ -7,6 +7,15 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Changed
+- The control task does not format or log the 2 s status line any more. It
+  copies a small sample, and a new low-priority task (`pb_status`, priority 1,
+  3 KB stack) formats it with integer tenths and logs it. The log text is the
+  same, except near a rounding tie (for example `-0.5` now shows `-1`, not `-0`
+  in whole degrees). The control task now has no float `printf` and no
+  `snprintf` in its periodic path. `pb_policy_get_snapshot()` copies its strings
+  without `snprintf`.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

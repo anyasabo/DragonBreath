@@ -49,13 +49,17 @@ below into the GitHub Release notes.
   on, the heap use increases by approximately 8 KB. See `docs/api-v2.md`.
 - `sdkconfig.defaults` sets `CONFIG_LWIP_DHCP_GET_NTP_SRV=y` for the NTP server
   from DHCP.
-- Fork-only: the dragon-core pin (`anyasabo/dragon-core` branch `anya`, 7d07bd1)
+- Fork-only: the dragon-core pin (`anyasabo/dragon-core` branch `anya`, ffd55cd)
   also brings two upstream changes after v0.36.0. The first is the dc_ui Start/Stop fix for
   manual overrides and safety faults (upstream PR #75). The second moves the
   captive DNS answer of dc_portal into a pure header.
 - Fork-only: the same pin brings two portal security fixes. After a late Wi-Fi
   join, the setup routes are no longer open on the LAN without auth. In station
   mode, `POST /api/v1/provisioning/scan` now checks the header.
+- Fork-only: the same pin bounds the body reads of the dc_portal routes. A JSON
+  body read stops on a stalled or slow client. An OTA upload stops after too
+  many receive timeouts in a row. If a built-in route answers before it
+  reads all of the body, the device closes the connection.
 - Fork-only: `dependencies.lock` in git is for ESP-IDF 5.3.6. A build with
   another ESP-IDF version (for example v6.1) writes its lock into the build
   directory (`DEPENDENCIES_LOCK`), so it does not change the tracked file.

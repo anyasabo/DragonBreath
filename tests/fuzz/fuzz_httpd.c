@@ -407,6 +407,16 @@ static void device_reset(const fuzz_knobs_t *k)
     pb_policy_load_params();
     pb_policy_set_control_source(s_source);
     FUZZ_CHECK(pb_httpd_register((httpd_handle_t)1) == ESP_OK, "pb_httpd_register failed");
+    static const char *const routes[] = {
+        "GET /api/v2/info", "GET /api/v2/state", "POST /api/v2/command",
+        "POST /api/v2/heartbeat", "GET /api/v2/events", "GET /api/v2/health",
+        "GET /settings", "POST /settings", "GET /api/v2/logs", "GET /api/v2/console",
+        "POST /api/v2/restart", "POST /api/v2/boot-inactive", "POST /api/v2/factory-reset",
+        "POST /api/v2/token", "GET /api/v2/calibration", "POST /api/v2/calibration",
+        "GET /api/v2/zones", "POST /api/v2/zones", "GET /api/v2/heater_method",
+        "POST /api/v2/heater_method",
+    };
+    fuzz_check_routes(routes, sizeof routes / sizeof routes[0]);
 }
 
 static bool device_armed_now(void)

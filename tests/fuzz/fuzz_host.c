@@ -300,6 +300,20 @@ const fuzz_route_t *fuzz_find_route(httpd_method_t method, const char *uri)
     return NULL;
 }
 
+void fuzz_check_routes(const char *const *routes, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        const char *sp = strchr(routes[i], ' ');
+        FUZZ_CHECK(sp != NULL, "bad route in the list");
+        httpd_method_t m = !strncmp(routes[i], "GET ", 4) ? HTTP_GET : HTTP_POST;
+        if (!fuzz_find_route(m, sp + 1)) {
+            fprintf(stderr, "route not registered: %s\n", routes[i]);
+            fuzz_fail(__FILE__, __LINE__, "an expected route is not registered");
+        }
+    }
+    FUZZ_CHECK(s_route_count == count, "the routes are not the expected list");
+}
+
 // The request that is now in a handler.
 static httpd_req_t s_req;
 static httpd_req_t s_async_req;

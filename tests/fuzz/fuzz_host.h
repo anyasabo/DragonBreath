@@ -73,6 +73,10 @@ typedef struct {
 // Find a route. Return NULL if there is none.
 const fuzz_route_t *fuzz_find_route(httpd_method_t method, const char *uri);
 
+// Check that the code under test registered exactly these routes, for example
+// "GET /api/v2/info". A missing route makes a fuzzer that tests nothing.
+void fuzz_check_routes(const char *const *routes, size_t count);
+
 // The most time that one request can hold the httpd task: the time that the
 // task waits for the client in recv(), for the headers, the body and the purge.
 // dragon-core dc_portal (fix/httpd-request-deadline) closes a request after

@@ -394,6 +394,15 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     s_persist_failures = 0;
     s_wrapped_count = 0;
     FUZZ_CHECK(db_portal_start() == ESP_OK, "db_portal_start failed");
+    static const char *const routes[] = {
+        // The dc_portal stand-ins.
+        "GET /api/v1/provisioning", "POST /api/v1/provisioning/product",
+        "POST /api/v1/system/reset",
+        // db_portal.c
+        "GET /api/v2/presets", "POST /api/v2/presets", "POST /api/v2/bambu/scan",
+        "GET /api/v2/bambu/discovered", "GET /km-config", "GET /diag", "GET /favicon.ico",
+    };
+    fuzz_check_routes(routes, sizeof routes / sizeof routes[0]);
 
     fuzz_request_t req;
     for (int n = 0; n < 16 && fuzz_next_request(&data, &size, &req); n++) {

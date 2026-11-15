@@ -4,6 +4,7 @@
 #include "pb_metrics.h"
 #include "pb_metrics_fmt.h"
 #include "pb_auth.h"
+#include "pb_httpd_replay.h"
 #include "pb_heater.h"
 #include "pb_ntc.h"
 #include "pb_leds.h"
@@ -584,40 +585,12 @@ static esp_err_t state_get(httpd_req_t *req)
     return send_json(req, state_json(&snap));
 }
 
-typedef struct {
-    char actor_id[PB_POLICY_OWNER_LEN + 1];
-    char request_id[65];
-    uint32_t revision;
-    char response[3072];
-} replay_entry_t;
+_Static_assert(PB_REPLAY_ACTOR_LEN == PB_POLICY_OWNER_LEN, "replay actor id length");
 
-static replay_entry_t s_replay[2];
-static unsigned s_replay_next;
-
-static replay_entry_t *replay_find(
-    const char *actor_id,
-    const char *request_id)
-{
-    for (size_t i = 0; i < sizeof s_replay / sizeof s_replay[0]; i++)
-        if (s_replay[i].request_id[0]
-                && strcmp(s_replay[i].actor_id, actor_id) == 0
-                && strcmp(s_replay[i].request_id, request_id) == 0)
-            return &s_replay[i];
-    return NULL;
-}
-
-static void replay_store(
-    const char *actor_id,
-    const char *request_id,
-    uint32_t revision,
-    const char *response)
-{
-    replay_entry_t *e = &s_replay[s_replay_next++ % (sizeof s_replay / sizeof s_replay[0])];
-    snprintf(e->actor_id, sizeof e->actor_id, "%s", actor_id);
-    snprintf(e->request_id, sizeof e->request_id, "%s", request_id);
-    e->revision = revision;
-    snprintf(e->response, sizeof e->response, "%s", response);
-}
+// The replay cache keeps its responses on the heap (about 1-2 KB each, only
+// after a command). The old static cache used 6.4 KB of RAM at all times.
+static void replay_free(void *p) { cJSON_free(p); }
+static pb_replay_t s_replay = { .free_fn = replay_free };
 
 static esp_err_t send_command_success(
     httpd_req_t *req,
@@ -637,12 +610,13 @@ static esp_err_t send_command_success(
     char *out = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (!out) return api_error(req, "500 Internal Server Error", "internal", "out of memory", request_id);
-    if (cache)
-        replay_store(actor_id, request_id, snap.state_revision, out);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t r = httpd_resp_sendstr(req, out);
-    cJSON_free(out);
+    if (cache)
+        pb_replay_store(&s_replay, actor_id, request_id, snap.state_revision, out);  // takes out
+    else
+        cJSON_free(out);
     return r;
 }
 
@@ -724,8 +698,8 @@ static esp_err_t command_post(httpd_req_t *req)
     bool cacheable = strcmp(cmd, "off") != 0
         && strcmp(cmd, "drying_stop") != 0
         && strcmp(cmd, "filter") != 0;
-    replay_entry_t *prior = cacheable
-        ? replay_find(actor_id_buf, request_id) : NULL;
+    const pb_replay_entry_t *prior = cacheable
+        ? pb_replay_find(&s_replay, actor_id_buf, request_id) : NULL;
     if (prior) {
         pb_policy_snapshot_t snap;
         pb_policy_get_snapshot(&snap);

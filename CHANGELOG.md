@@ -103,6 +103,9 @@ below into the GitHub Release notes.
   `snprintf`. The 3 KB stack is an estimate (printf has no stack data). On the
   dev board, check the high-water mark of the `pb_status` task (the
   `/metrics` task stack value, or `uxTaskGetStackHighWaterMark`).
+- The replay cache of `POST /api/v2/command` keeps its two responses on the
+  heap, not in a fixed 6.4 KB static buffer. This gives 6.1 KB of RAM back
+  before the first command. A cached response is not cut at 3 KB any more.
 
 ### Fixed
 - **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or

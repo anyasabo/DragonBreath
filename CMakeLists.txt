@@ -55,7 +55,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.idf-version")
     string(STRIP "${DB_IDF_PINNED}" DB_IDF_PINNED)
     string(REGEX REPLACE "^v" "" DB_IDF_PINNED_SEMVER "${DB_IDF_PINNED}")
     if(NOT DB_IDF_SEMVER VERSION_EQUAL DB_IDF_PINNED_SEMVER)
-        message(WARNING "ESP-IDF ${DB_IDF_VERSION} differs from .idf-version (${DB_IDF_PINNED}), "
+        message(WARNING "ESP-IDF ${DB_IDF_SEMVER} differs from .idf-version (${DB_IDF_PINNED}), "
                         "the version of the CI and release builds")
     endif()
 endif()

@@ -45,3 +45,11 @@ dependencies:
     git: https://github.com/anyasabo/dragon-core.git
     path: components/dc_peer
     version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+  dc_time:
+    git: https://github.com/anyasabo/dragon-core.git
+    path: components/dc_time
+    version: 1fa4594c32234acb9cae51295d82dd765fe4be70
+  dc_syslog:
+    git: https://github.com/anyasabo/dragon-core.git
+    path: components/dc_syslog
+    version: 1fa4594c32234acb9cae51295d82dd765fe4be70

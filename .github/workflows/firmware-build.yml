@@ -18,6 +18,7 @@ on:
       - '.idf-version'
       - 'tools/elf_check*'
       - 'tools/ram_treemap.py'
+      - 'tools/jtag_profile.py'
       - '.github/workflows/firmware-build.yml'
   pull_request:
     paths:
@@ -35,6 +36,7 @@ on:
       - '.idf-version'
       - 'tools/elf_check*'
       - 'tools/ram_treemap.py'
+      - 'tools/jtag_profile.py'
   workflow_dispatch:
 
 # Least-privilege GITHUB_TOKEN: the build only needs to read code and upload
@@ -182,6 +184,9 @@ jobs:
 
       - name: Test ELF check and RAM treemap tools
         run: python3 -m unittest tests/test_elf_tools.py
+
+      - name: Test JTAG stack sampler (fake OpenOCD)
+        run: python3 -m unittest tests/test_jtag_profile.py
 
       # E1 static analysis: cppcheck over OUR OWN code (components/ + main/). Fails on
       # any error/warning/performance/portability finding (--error-exitcode). The C

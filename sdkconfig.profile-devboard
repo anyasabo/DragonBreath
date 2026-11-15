@@ -1,0 +1,23 @@
+# Profiling overlay for the ESP32-C3 dev board. ESP-IDF v6.1 only: v5.3 has no
+# frame-pointer option. Layer it on the native-USB debug profile:
+#   SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.debug-devboard-native;sdkconfig.profile-devboard"
+# See docs/PROFILING.md. Never use it on the Panda Breath or for a release.
+
+# Frame pointers (s0) in all compiled code, also in leaf functions. The panic
+# handler, the heap tracer and tools/jtag_profile.py can then walk the stack.
+# The code is bigger and a little slower.
+CONFIG_ESP_SYSTEM_USE_FRAME_POINTER=y
+
+# Heap tracing in the device RAM, with 10 callers for each record (RISC-V
+# allows a depth above 0 only with frame pointers). With this option, app_main
+# starts a leak trace at boot (64 records). Dump it from GDB:
+#   call heap_trace_dump()
+CONFIG_HEAP_TRACING_STANDALONE=y
+CONFIG_HEAP_TRACING_STACK_DEPTH=10
+CONFIG_HEAP_TRACE_HASH_MAP=y
+CONFIG_HEAP_TASK_TRACKING=y
+
+# JTAG: OpenOCD and GDB see the FreeRTOS tasks, and a panic stops at a
+# breakpoint instead of a reboot when a debugger is attached.
+CONFIG_ESP_DEBUG_OCDAWARE=y
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y

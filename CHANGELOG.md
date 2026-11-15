@@ -101,6 +101,11 @@ below into the GitHub Release notes.
   firmware for recovery from a false trip. A safe dev-board build reports only.
   The thresholds are provisional until a first-heat capture of an 82 kΩ and a
   33 kΩ board exists. See `docs/SAFETY.md`.
+- `sdkconfig.profile-devboard`: a profiling overlay for the dev board (ESP-IDF
+  v6.1) with frame pointers, standalone heap tracing with 10 callers, and
+  debugger-aware panics. `tools/jtag_profile.py` samples the stack over JTAG
+  through OpenOCD and writes folded stacks for a flame graph. See
+  `docs/PROFILING.md`. Release and dev builds do not change.
 
 ### Changed
 - The firmware also builds with ESP-IDF v6.1. Release builds continue to use

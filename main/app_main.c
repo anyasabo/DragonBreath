@@ -49,6 +49,9 @@
 #include "pb_httpd.h"
 #include "db_portal.h"
 #include "esp_ota_ops.h"
+#if CONFIG_HEAP_TRACING_STANDALONE
+#include "esp_heap_trace.h"
+#endif
 
 // Optional local dev config (gitignored): WiFi creds + Moonraker host. Without it
 // the build still works — the device just comes up without network credentials.
@@ -471,6 +474,21 @@ static void control_task(void *arg)
     }
 }
 
+#if CONFIG_HEAP_TRACING_STANDALONE
+// Profiling builds only (sdkconfig.profile-devboard): a leak trace from boot.
+// Dump it from GDB with "call heap_trace_dump()". See docs/PROFILING.md.
+#define DB_HEAP_TRACE_RECORDS 64
+static heap_trace_record_t s_heap_trace[DB_HEAP_TRACE_RECORDS];
+
+static void heap_trace_boot(void)
+{
+    esp_err_t e = heap_trace_init_standalone(s_heap_trace, DB_HEAP_TRACE_RECORDS);
+    if (e == ESP_OK) e = heap_trace_start(HEAP_TRACE_LEAKS);
+    ESP_LOGW(TAG, "profiling build: heap leak trace %s (%d records)",
+             e == ESP_OK ? "on" : esp_err_to_name(e), DB_HEAP_TRACE_RECORDS);
+}
+#endif
+
 void app_main(void)
 {
     // Install the console-capture hook FIRST so the whole app_main boot log is
@@ -479,6 +497,9 @@ void app_main(void)
     dc_evlog_console_init();
 
     ESP_LOGI(TAG, "DragonBreath starting");
+#if CONFIG_HEAP_TRACING_STANDALONE
+    heap_trace_boot();
+#endif
 
     dc_evlog_init();
     pb_board_init();

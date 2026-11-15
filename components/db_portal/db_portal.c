@@ -12,6 +12,7 @@
 #include "pb_ha.h"
 #include "pb_httpd.h"
 #include "pb_auth.h"
+#include "pb_netlog.h"
 #include "pb_policy.h"
 
 #include "cJSON.h"
@@ -367,6 +368,21 @@ static cJSON *describe_product(void *ctx)
     add_field(s, field("km_topic", "Device topic", "text", km.topic, false));
     add_field(s, boolean_field("km_tls", "Use TLS", km.tls));
     add_field(s, boolean_field("km_writeback", "Temperature writeback", km.writeback));
+
+    pb_netlog_config_t nl;
+    pb_netlog_get_config(&nl);
+    snprintf(port, sizeof port, "%u", (unsigned)nl.syslog_port);
+    s = section(root, "Syslog and time");
+    cJSON_AddStringToObject(s, "description",
+        "Send the device log to a syslog server (RFC 5424 over UDP). Leave the syslog "
+        "server empty to turn syslog off. The clock is used only for log timestamps. "
+        "Leave the NTP server empty to use the NTP server from DHCP. Changing this "
+        "requires a restart.");
+    add_field(s, field("sl_host", "Syslog server (host or IP, empty = off)", "text",
+                       nl.syslog_host, false));
+    add_field(s, field("sl_port", "Syslog port", "number", port, false));
+    add_field(s, field("ntp_host", "NTP server (host or IP, empty = from DHCP)", "text",
+                       nl.ntp_host, false));
     return root;
 }
 
@@ -494,6 +510,7 @@ static esp_err_t parse_product_request(const cJSON *values,
     PARSE_TEXT(km_pass); PARSE_TEXT(km_inst); PARSE_TEXT(km_topic);
     PARSE_BOOL(km_tls); PARSE_BOOL(km_writeback);
     PARSE_TEXT(pr_host); PARSE_TEXT(pr_key);
+    PARSE_TEXT(sl_host); PARSE_PORT(sl_port); PARSE_TEXT(ntp_host);
 
 #undef PARSE_TEXT
 #undef PARSE_PORT
@@ -527,6 +544,9 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
     dc_prusa_config_t pr = {0};
     err = dc_prusa_get_config(&pr);
     if (err != ESP_OK) return persistence_error("Prusa", err, message, message_size);
+    pb_netlog_config_t nl;
+    err = pb_netlog_get_config(&nl);
+    if (err != ESP_OK) return persistence_error("syslog and NTP", err, message, message_size);
 
     // Parse and stage every field before the first setter can touch runtime/NVS.
     db_portal_product_request_t request;
@@ -567,7 +587,7 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
 
     db_portal_product_plan_t plan;
     err = db_portal_plan_product_save(&request, dc_source_get(), &mr, &bb, &ha, &km, &pr,
-                                      &plan, message, message_size);
+                                      &nl, &plan, message, message_size);
     if (err != ESP_OK) return err;
 
     if (plan.moonraker_changed) {
@@ -589,6 +609,10 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
     if (plan.prusa_changed) {
         err = dc_prusa_set_config(&plan.prusa);
         if (err != ESP_OK) return persistence_error("Prusa", err, message, message_size);
+    }
+    if (plan.netlog_changed) {
+        err = pb_netlog_set_config(&plan.netlog);
+        if (err != ESP_OK) return persistence_error("syslog and NTP", err, message, message_size);
     }
     if (bb_chamber_ctl_changed) {
         err = bambu_direct_chamber_control_set(bb_chamber_ctl.value);
@@ -616,7 +640,7 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
 #endif
 
     bool changed = plan.moonraker_changed || plan.bambu_changed || plan.ha_changed ||
-                   plan.klipper_mqtt_changed || plan.prusa_changed ||
+                   plan.klipper_mqtt_changed || plan.prusa_changed || plan.netlog_changed ||
                    plan.source_changed || bb_chamber_ctl_changed || hostname_changed;
 #ifdef CONFIG_DB_REQUIRE_CONTROL_TOKEN
     changed = changed || token_changed;

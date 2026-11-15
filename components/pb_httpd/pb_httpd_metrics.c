@@ -10,6 +10,7 @@
 #include "pb_metrics.h"
 #include "pb_metrics_fmt.h"
 #include "pb_heater.h"
+#include "pb_netlog.h"
 #include "pb_ntc.h"
 #include "pb_policy.h"
 
@@ -157,6 +158,15 @@ static void collect(pb_metrics_snapshot_t *m, httpd_req_t *req,
     size_t nfds = sizeof fds / sizeof fds[0];
     m->http_sockets = httpd_get_client_list(req->handle, &nfds, fds) == ESP_OK
         ? (int16_t)nfds : -1;
+
+    pb_netlog_stats_t nl;
+    pb_netlog_get_stats(&nl);
+    m->syslog_enabled = nl.syslog_enabled;
+    m->syslog_sent = nl.syslog_sent;
+    m->syslog_dropped = nl.syslog_dropped;
+    m->syslog_send_errors = nl.syslog_send_errors;
+    m->syslog_queued = nl.syslog_queued;
+    m->time_synced = nl.time_synced;
 }
 
 static bool send_chunk(void *ctx, const char *data, size_t len)

@@ -103,6 +103,12 @@ static void known_snapshot(pb_metrics_snapshot_t *s)
     s->rssi_valid = true;
     s->rssi_dbm = -61;
     s->http_sockets = 2;
+    s->syslog_enabled = true;
+    s->syslog_sent = 1500;
+    s->syslog_dropped = 12;
+    s->syslog_send_errors = 3;
+    s->syslog_queued = 1;
+    s->time_synced = true;
 }
 
 static const char k_expected[] =
@@ -233,7 +239,25 @@ static const char k_expected[] =
     "dragonbreath_wifi_rssi_dbm -61\n"
     "# HELP dragonbreath_http_open_sockets Open client sockets of the HTTP server.\n"
     "# TYPE dragonbreath_http_open_sockets gauge\n"
-    "dragonbreath_http_open_sockets 2\n";
+    "dragonbreath_http_open_sockets 2\n"
+    "# HELP dragonbreath_syslog_enabled 1 if the device sends its log to a syslog server.\n"
+    "# TYPE dragonbreath_syslog_enabled gauge\n"
+    "dragonbreath_syslog_enabled 1\n"
+    "# HELP dragonbreath_syslog_sent_total Syslog datagrams sent since boot.\n"
+    "# TYPE dragonbreath_syslog_sent_total counter\n"
+    "dragonbreath_syslog_sent_total 1500\n"
+    "# HELP dragonbreath_syslog_dropped_total Log lines dropped since boot because the syslog queue was full.\n"
+    "# TYPE dragonbreath_syslog_dropped_total counter\n"
+    "dragonbreath_syslog_dropped_total 12\n"
+    "# HELP dragonbreath_syslog_send_errors_total Failed syslog sends and server address lookups since boot.\n"
+    "# TYPE dragonbreath_syslog_send_errors_total counter\n"
+    "dragonbreath_syslog_send_errors_total 3\n"
+    "# HELP dragonbreath_syslog_queue_lines Log lines in the syslog queue now.\n"
+    "# TYPE dragonbreath_syslog_queue_lines gauge\n"
+    "dragonbreath_syslog_queue_lines 1\n"
+    "# HELP dragonbreath_time_synced 1 after the first SNTP sync. The wall clock is for log timestamps only.\n"
+    "# TYPE dragonbreath_time_synced gauge\n"
+    "dragonbreath_time_synced 1\n";
 
 static void diff_fail(const char *got, const char *want)
 {
@@ -335,6 +359,24 @@ static void test_unknown_values(void)
     CHECK(strstr(o, "\ndragonbreath_boots_total ") == NULL);
     CHECK(strstr(o, "# TYPE dragonbreath_boots_total counter\n# HELP") != NULL);
     CHECK(strstr(o, "NaN") == NULL && strstr(o, "nan") == NULL);
+}
+
+// Syslog off and no clock: the families stay, with the value 0.
+static void test_syslog_off(void)
+{
+    pb_metrics_snapshot_t s;
+    known_snapshot(&s);
+    s.syslog_enabled = false;
+    s.syslog_sent = s.syslog_dropped = s.syslog_send_errors = s.syslog_queued = 0;
+    s.time_synced = false;
+    CHECK(format(&s) > 0);
+    const char *o = cap.data;
+    CHECK(strstr(o, "\ndragonbreath_syslog_enabled 0\n") != NULL);
+    CHECK(strstr(o, "\ndragonbreath_syslog_sent_total 0\n") != NULL);
+    CHECK(strstr(o, "\ndragonbreath_syslog_dropped_total 0\n") != NULL);
+    CHECK(strstr(o, "\ndragonbreath_syslog_send_errors_total 0\n") != NULL);
+    CHECK(strstr(o, "\ndragonbreath_syslog_queue_lines 0\n") != NULL);
+    CHECK(strstr(o, "\ndragonbreath_time_synced 0\n") != NULL);
 }
 
 // Without the trace facility or the run-time stats, the task families are not
@@ -483,6 +525,8 @@ static void worst_case_snapshot(pb_metrics_snapshot_t *s)
     s->idf_version = "v5.3.6-dirty-abcdefghijklmnopqr";
     s->rssi_dbm = -128;
     s->http_sockets = INT16_MAX;
+    s->syslog_sent = s->syslog_dropped = s->syslog_send_errors = UINT32_MAX;
+    s->syslog_queued = UINT32_MAX;
 }
 
 static void test_worst_case_size(void)
@@ -527,6 +571,7 @@ int main(int argc, char **argv)
     test_sink_failure();
     test_negative_temperatures();
     test_unknown_values();
+    test_syslog_off();
     test_task_families_optional();
     test_label_escaping();
     test_state_sets_and_ranges();

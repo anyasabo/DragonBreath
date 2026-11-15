@@ -16,12 +16,33 @@ below into the GitHub Release notes.
   - control-tick timing: late ticks, last and maximum duration, maximum interval
   - heap, and the stack high-water mark and CPU time of each task
   - uptime, boot count, reset reason, firmware version, Wi-Fi RSSI and HTTP sockets
+  - syslog: enabled, datagrams sent, lines dropped, send errors, queue length,
+    and the SNTP sync state
 
   The writer uses integer math only. It streams the response in chunks through
   a 1 KB buffer. See `docs/api-v2.md`.
 - `GET /api/v2/state` reports `reset_reason` (the `esp_reset_reason()` of this boot,
   for example `poweron` or `task_wdt`).
 - The firmware counts boots in NVS (`app_nvs/boot_cnt`).
+- Syslog and NTP settings (Setup → "Syslog and time", or the product fields
+  `sl_host`, `sl_port` and `ntp_host` of `POST /api/v1/provisioning/product`).
+  If a syslog server is set, the device sends its ESP-IDF log as RFC 5424 over
+  UDP (dragon-core `dc_syslog`, APP-NAME `dragonbreath`). The default is off.
+  SNTP (dragon-core `dc_time`) gives the log lines a UTC timestamp. If
+  `ntp_host` is set, SNTP uses only that server. If `ntp_host` is empty (the
+  default), SNTP uses the NTP server from DHCP. Nothing related to safety or
+  control uses the wall clock. A change applies after a restart. Syslog starts
+  after the HTTP server. In the setup portal, syslog does not start. With syslog
+  on, the heap use increases by approximately 8 KB. See `docs/api-v2.md`.
+- `sdkconfig.defaults` sets `CONFIG_LWIP_DHCP_GET_NTP_SRV=y` for the NTP server
+  from DHCP.
+- Fork-only: the dragon-core pin (`anyasabo/dragon-core` 4b801ef) also brings
+  two upstream changes after v0.36.0. The first is the dc_ui Start/Stop fix for
+  manual overrides and safety faults (upstream PR #75). The second moves the
+  captive DNS answer of dc_portal into a pure header.
+- Fork-only: `dependencies.lock` in git is for ESP-IDF 5.3.6. A build with
+  another ESP-IDF version (for example v6.1) writes its lock into the build
+  directory (`DEPENDENCIES_LOCK`), so it does not change the tracked file.
 - `sdkconfig.defaults` turns on the FreeRTOS trace facility and the run-time
   stats (64-bit counter) for the per-task metrics. Static DRAM use increases by
   approximately 1.7 KB.

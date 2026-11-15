@@ -195,6 +195,10 @@ watchdog.
 - **`/diag`** — read-only live telemetry (chamber/PTC temps, SSR output, mode, fault,
   running element-temp peak) over SSE, with a trend chart and a client-side CSV
   download. Zero device RAM.
+- **Syslog** (optional): set a syslog server in Setup ("Syslog and time") and the
+  device sends its log as RFC 5424 over UDP (for example to Grafana Alloy,
+  rsyslog or syslog-ng). An optional NTP server (else the one from DHCP) gives the
+  log lines a timestamp. The wall clock is never used for control or safety.
 - **`/console`** — terminal-style viewer of the firmware `ESP_LOGx` ring (boot log
   included) with auto-refresh and `.txt` download; useful on no-USB hardware where the
   serial console is otherwise unreachable. Backed by auth-gated `GET /api/v2/console`.

@@ -33,6 +33,22 @@ endif()
 message(STATUS "DragonBreath version: ${PROJECT_VER}")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# Fork-only: dependencies.lock in git is for one ESP-IDF version (its "idf:"
+# entry). A build with another ESP-IDF version keeps its lock in the build
+# directory, so it does not rewrite the tracked file.
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/dependencies.lock")
+    file(READ "${CMAKE_CURRENT_LIST_DIR}/dependencies.lock" DB_LOCK_TEXT)
+    if(DB_LOCK_TEXT MATCHES "\n  idf:\n    source:\n      type: idf\n    version: ([0-9.]+)")
+        set(DB_LOCK_IDF "${CMAKE_MATCH_1}")
+        if(NOT DB_LOCK_IDF STREQUAL "${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}.${IDF_VERSION_PATCH}")
+            message(STATUS "ESP-IDF differs from dependencies.lock (${DB_LOCK_IDF}): "
+                           "using ${CMAKE_BINARY_DIR}/dependencies.lock")
+            idf_build_set_property(DEPENDENCIES_LOCK "${CMAKE_BINARY_DIR}/dependencies.lock")
+        endif()
+    endif()
+endif()
+
 project(dragonbreath)
 
 # ESP-IDF 5.3.1's HTTP server can process and recycle a socket while an

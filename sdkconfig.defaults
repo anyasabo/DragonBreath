@@ -53,3 +53,8 @@ CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y
+
+# Syslog + SNTP (pb_netlog, dc_time). If no NTP server is set, dc_time asks
+# DHCP for one (option 42). One SNTP server at a time, so the default
+# CONFIG_LWIP_SNTP_MAX_SERVERS=1 is enough.
+CONFIG_LWIP_DHCP_GET_NTP_SRV=y

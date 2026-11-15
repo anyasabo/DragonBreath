@@ -98,6 +98,14 @@ typedef struct {
     bool rssi_valid;
     int8_t rssi_dbm;
     int16_t http_sockets;           // < 0: unknown, sample omitted
+
+    // Syslog and wall clock (pb_netlog). All 0 if syslog is off.
+    bool syslog_enabled;            // dc_syslog runs
+    uint32_t syslog_sent;           // datagrams sent since boot
+    uint32_t syslog_dropped;        // lines dropped, queue full
+    uint32_t syslog_send_errors;    // failed sends and address lookups
+    uint32_t syslog_queued;         // lines in the queue now
+    bool time_synced;               // SNTP synced at least once (logs only)
 } pb_metrics_snapshot_t;
 
 // Receives each full buffer and the last part. Returns false to stop the writer

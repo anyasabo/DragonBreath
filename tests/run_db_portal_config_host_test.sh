@@ -9,7 +9,9 @@ out="${TMPDIR:-/tmp}/dragonbreath-db-portal-config-test"
   -I"$root/components/db_portal/include" \
   -I"$root/components/db_klipper_mqtt/include" \
   -I"$root/components/pb_ha/include" \
+  -I"$root/components/pb_netlog/include" \
   "$root/components/db_portal/db_portal_config.c" \
+  "$root/components/pb_netlog/pb_netlog_config.c" \
   "$root/tests/db_portal_config_host_test.c" \
   -o "$out"
 

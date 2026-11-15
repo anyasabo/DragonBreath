@@ -195,11 +195,10 @@ jobs:
       # the release build in release.yml all fail on any warning in our components
       # (verified clean under default AND sdkconfig.release).
       #
-      # E1 dependency-lock validation is intentionally NOT a git-diff gate here:
-      # `dependencies.lock` is .gitignored (generated, not version-controlled), so
-      # there is no committed lock to drift. The ESP-IDF build step re-solves and
-      # validates the managed-component dependencies against the pinned manifests
-      # (components/*/idf_component.yml) on every run, which is the validation.
+      # E1 dependency-lock validation is NOT a git-diff gate here. The fork commits
+      # `dependencies.lock`, but the lock records the ESP-IDF version of the local
+      # build. If the CI ESP-IDF version is different, the build solves again and
+      # writes a new lock. The pins in main/idf_component.yml are commit hashes.
       - name: Build (ESP-IDF ${{ env.IDF_VERSION }})
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:

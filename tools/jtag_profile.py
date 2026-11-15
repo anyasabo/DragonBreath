@@ -15,6 +15,12 @@ The firmware must have frame pointers (sdkconfig.profile-devboard, ESP-IDF
 v6.1). Without them, s0 is a general register and the walk stops at once: the
 stacks then have the pc and the ra only.
 
+Safety: only for a dev-board build (CONFIG_PB_DEVBOARD_SAFE). While the CPU
+is halted, each GPIO keeps its last level, so a relay output stays on, and
+OpenOCD stops the watchdogs. No firmware safety check runs during a halt.
+The script refuses an ELF whose build has no CONFIG_PB_DEVBOARD_SAFE, and it
+sends "resume" at the start, after an error, after a reconnect and at exit.
+
 Each sample halts the CPU for a few milliseconds. The sample shows the code
 that runs at the halt: the idle task is the free CPU time. The halts change
 the timing of the firmware. Use the result to find hot code, not to measure
@@ -27,11 +33,13 @@ Usage (OpenOCD runs in another terminal, see docs/PROFILING.md):
 """
 
 import argparse
+import atexit
 import collections
 import glob
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -75,6 +83,67 @@ class OpenOcd:
 
     def close(self):
         self.sock.close()
+
+
+def devboard_safe(elf, sdkconfig=None):
+    """True if the build of the ELF has CONFIG_PB_DEVBOARD_SAFE. The script
+    reads sdkconfig.h of the build dir (ELF_DIR/config/sdkconfig.h) or the
+    given sdkconfig file. Returns (ok, path that it read)."""
+    paths = [sdkconfig] if sdkconfig else [
+        os.path.join(os.path.dirname(os.path.abspath(elf)), "config", "sdkconfig.h"),
+        os.path.join(os.path.dirname(os.path.abspath(elf)), "sdkconfig"),
+    ]
+    for path in paths:
+        if path and os.path.isfile(path):
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            ok = re.search(r"^(#define CONFIG_PB_DEVBOARD_SAFE 1|CONFIG_PB_DEVBOARD_SAFE=y)\s*$",
+                           text, re.M) is not None
+            return ok, path
+    return False, None
+
+
+class Target:
+    """The OpenOCD link with the rule: never leave the CPU halted. resume()
+    reconnects if the link broke, and atexit and the signal handlers call it."""
+
+    def __init__(self, host, port, connect=OpenOcd):
+        self.host, self.port, self.connect = host, port, connect
+        self.ocd = None
+        self.halted = False
+
+    def link(self):
+        if self.ocd is None:
+            self.ocd = self.connect(self.host, self.port)
+            self.ocd.cmd("resume")              # a halt from an earlier run
+        return self.ocd
+
+    def drop(self):
+        if self.ocd is not None:
+            try:
+                self.ocd.close()
+            except OSError:
+                pass
+        self.ocd = None
+
+    def halt(self):
+        self.halted = True                      # before the command: a halt can land
+        self.link().cmd("halt")
+
+    def resume(self):
+        for _ in range(3):
+            try:
+                self.link().cmd("resume")
+                self.halted = False
+                return True
+            except (OSError, ValueError):
+                self.drop()                     # reconnect and try again
+        return False
+
+    def close(self):
+        if self.halted or self.ocd is not None:
+            self.resume()
+        self.drop()
 
 
 def is_data(addr):
@@ -156,15 +225,34 @@ def main(argv=None):
     ap.add_argument("--samples", type=int, default=1000)
     ap.add_argument("--addr2line")
     ap.add_argument("-o", "--output", default="-", help="folded stacks (default: stdout)")
+    ap.add_argument("--sdkconfig", help="sdkconfig or sdkconfig.h of the build (default: next to the ELF)")
     args = ap.parse_args(argv)
 
-    ocd = OpenOcd(args.host, args.port)
+    ok, path = devboard_safe(args.elf, args.sdkconfig)
+    if not ok:
+        sys.exit("jtag_profile: refused. %s has no CONFIG_PB_DEVBOARD_SAFE. A halt keeps the relay "
+                 "GPIO at its level and stops the watchdogs: use a dev-board build only."
+                 % (path or "no sdkconfig found next to the ELF (use --sdkconfig)"))
+
+    target = Target(args.host, args.port)
+    atexit.register(target.close)
+
+    def on_signal(signum, _frame):
+        target.close()
+        sys.exit(128 + signum)
+    # SIGINT (Ctrl-C) raises KeyboardInterrupt: the finally blocks resume the
+    # target, and the samples so far are written.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, on_signal)
+
     raw = []
     errors = 0
     try:
+        target.link()
         for i in range(args.samples):
             try:
-                ocd.cmd("halt")
+                target.halt()
+                ocd = target.link()
                 pc, ra, fp = ocd.reg("pc"), ocd.reg("ra"), ocd.reg("s0")
                 raw.append(walk(pc, ra, fp, ocd.read_words))
             except (ValueError, OSError) as e:
@@ -172,14 +260,16 @@ def main(argv=None):
                 if errors > 20:
                     sys.exit("jtag_profile: too many errors, last: %s" % e)
             finally:
-                ocd.cmd("resume")
+                if not target.resume():
+                    sys.exit("jtag_profile: cannot resume the target. Resume it by hand "
+                             "(OpenOCD: resume, or reset the board).")
             time.sleep(args.interval_ms / 1000.0)
             if (i + 1) % 100 == 0:
                 print("jtag_profile: %d samples" % (i + 1), file=sys.stderr)
     except KeyboardInterrupt:
-        pass
+        print("jtag_profile: stopped", file=sys.stderr)
     finally:
-        ocd.close()
+        target.close()
 
     sym = symbolizer(find_addr2line(args.addr2line), args.elf, [a for s in raw for a in s])
     counts = collections.Counter(fold(s, sym) for s in raw)

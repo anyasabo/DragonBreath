@@ -2,6 +2,7 @@
 """Unit tests for tools/jtag_profile.py with a fake OpenOCD Tcl server."""
 import os
 import socket
+import tempfile
 import sys
 import threading
 import unittest
@@ -115,6 +116,74 @@ class OpenOcdClientTest(unittest.TestCase):
         self.assertEqual(srv.commands[0], "halt")
         self.assertEqual(srv.commands[-1], "resume")
         self.assertIn("read_memory 0x3fc900f8 32 2", srv.commands)
+
+
+class SafetyTest(unittest.TestCase):
+    def test_refuses_build_without_devboard_safe(self):
+        with tempfile.TemporaryDirectory() as d:
+            elf = os.path.join(d, "dragonbreath.elf")
+            open(elf, "w").close()
+            self.assertEqual(jtag_profile.devboard_safe(elf), (False, None))   # no config
+            os.mkdir(os.path.join(d, "config"))
+            h = os.path.join(d, "config", "sdkconfig.h")
+            with open(h, "w") as fh:
+                fh.write("#define CONFIG_PB_POWER_LED 1\n")
+            self.assertEqual(jtag_profile.devboard_safe(elf), (False, h))
+            with open(h, "a") as fh:
+                fh.write("#define CONFIG_PB_DEVBOARD_SAFE 1\n")
+            self.assertEqual(jtag_profile.devboard_safe(elf), (True, h))
+            other = os.path.join(d, "sdkconfig.other")
+            with open(other, "w") as fh:
+                fh.write("# CONFIG_PB_DEVBOARD_SAFE is not set\n")
+            self.assertFalse(jtag_profile.devboard_safe(elf, other)[0])
+            # main() exits before it connects.
+            with self.assertRaises(SystemExit) as cm:
+                jtag_profile.main(["--elf", elf, "--sdkconfig", other, "--port", "1"])
+            self.assertIn("refused", str(cm.exception))
+
+
+class FakeLink:
+    """An OpenOcd stand-in. fail_on: commands that raise once."""
+    log = []
+
+    def __init__(self, host, port):
+        self.fail_on = set(FakeLink.next_fail)
+        FakeLink.next_fail = set()
+        FakeLink.log.append("connect")
+
+    def cmd(self, c):
+        if c in self.fail_on:
+            self.fail_on.discard(c)
+            raise ConnectionError("broken")
+        FakeLink.log.append(c)
+        return ""
+
+    def close(self):
+        FakeLink.log.append("close")
+
+
+class TargetTest(unittest.TestCase):
+    def setUp(self):
+        FakeLink.log = []
+        FakeLink.next_fail = set()
+
+    def test_resume_on_connect_and_close(self):
+        t = jtag_profile.Target("h", 1, connect=FakeLink)
+        t.halt()
+        self.assertEqual(FakeLink.log, ["connect", "resume", "halt"])
+        t.close()                                   # halted: resume before close
+        self.assertEqual(FakeLink.log[-2:], ["resume", "close"])
+        self.assertFalse(t.halted)
+
+    def test_resume_reconnects_after_a_broken_link(self):
+        t = jtag_profile.Target("h", 1, connect=FakeLink)
+        t.link()
+        t.halt()
+        t.ocd.fail_on.add("resume")                 # the link breaks
+        self.assertTrue(t.resume())
+        # The reconnect sends resume, then resume() sends it again (no harm).
+        self.assertEqual(FakeLink.log[-5:], ["halt", "close", "connect", "resume", "resume"])
+        self.assertFalse(t.halted)
 
 
 if __name__ == "__main__":

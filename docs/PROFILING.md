@@ -3,6 +3,22 @@
 This page is for an ESP32-C3 dev board with the native USB Serial/JTAG port.
 Do not use the profiling build on the Panda Breath or for a release.
 
+## Safety of a JTAG halt
+
+When OpenOCD halts the CPU, no firmware runs. Each GPIO keeps its last level,
+so a relay output that is on stays on. OpenOCD also stops the watchdogs during
+the halt. No soft cutoff, no watchdog and no comms deadman can act. Thus:
+
+- Use a dev-board build only (`CONFIG_PB_DEVBOARD_SAFE`). It has no relay GPIO
+  code. `tools/jtag_profile.py` refuses an ELF whose build does not have this
+  option. It reads `config/sdkconfig.h` next to the ELF, or `--sdkconfig`.
+- Never attach a debugger to a Panda Breath that is connected to mains.
+- The script sends `resume` at these times: at the connect, after each sample,
+  after an error, after a reconnect and at exit (also on Ctrl-C, SIGTERM and
+  SIGHUP).
+  If it cannot resume, it stops and tells you. Then resume the target by hand
+  (`resume` in the OpenOCD console) or reset the board.
+
 ## The profiling build
 
 `sdkconfig.profile-devboard` is an overlay on the native-USB debug profile. It

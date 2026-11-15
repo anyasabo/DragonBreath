@@ -4,3 +4,12 @@
 # serial log output — intentional. Dev builds (plain `idf.py build`) omit this
 # file and keep the console.
 CONFIG_PB_POWER_LED=y
+
+# Fork-only settings (anyasabo/DragonBreath anya). Do not send these upstream.
+# A device with no control token refuses LAN control and OTA. Set the token on
+# the setup AP first. A token of 32 or more random characters cannot be guessed.
+CONFIG_DB_REQUIRE_CONTROL_TOKEN=y
+# No auth lockout: other hosts on the VLAN can use it to block OTA and control.
+# CONFIG_DB_AUTH_LOCKOUT is not set
+# The setup AP starts only if the Wi-Fi station cannot join.
+CONFIG_DB_DEFAULT_AP_MODE_FALLBACK=y

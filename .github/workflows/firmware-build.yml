@@ -188,7 +188,9 @@ jobs:
             sed -nE '/^[^ :]+:[0-9]+:[0-9]+: warning: .*\[-W[^]]+\]$/p' build-extra-warnings.log | sort -u |
               awk '{
                 flag = $NF; gsub(/[][]/, "", flag); src = $1
-                if (src ~ /managed_components\//) o = 2; else if (src ~ /^\.\.\//) o = 1; else o = 3
+                if (src ~ /managed_components\//) o = 2
+                else if (src ~ /\/esp-idf\/|^\/opt\/esp\/idf\//) o = 3
+                else o = 1
                 n[flag, o]++; f[flag] = 1
               } END {
                 for (k in f) printf "| `%s` | %d | %d | %d |\n", k, n[k, 1], n[k, 2], n[k, 3]

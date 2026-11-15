@@ -57,36 +57,39 @@ endif()
 # cleanliness). Both the default and release builds must stay clean under these flags.
 #
 # The pb_* and db_* components are auto-discovered from components/ (so a new one is
-# covered automatically), and we assert at least one matched: if ESP-IDF ever changes
-# the internal component-target naming (__idf_<name>), this fails the configure loudly
-# instead of silently applying -Werror to nothing.
+# covered automatically). main (app_main.c) is first-party too. We assert at least one
+# matched: if ESP-IDF ever changes the internal component-target naming
+# (__idf_<name>), this fails the configure loudly instead of silently applying
+# -Werror to nothing.
 #
-# DB_EXTRA_WARNINGS=ON adds more warnings to the same components. They stay warnings
-# (-Wno-error=...), so a CI job can count them without a failed build.
+# DB_EXTRA_WARNINGS=ON adds more warnings to the same components. With it, a plain
+# -Wno-error keeps all warnings as warnings, so a CI job can count them without a
+# failed build. The default build keeps -Werror.
 option(DB_EXTRA_WARNINGS "Add extra warnings (not errors) to first-party components" OFF)
 set(DB_EXTRA_WARNING_FLAGS
     -Wdouble-promotion -Wshadow -Wformat=2 -Wundef -Wstrict-prototypes)
 file(GLOB DB_OWN_COMPONENT_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/components/pb_*
     ${CMAKE_CURRENT_SOURCE_DIR}/components/db_*)
-set(DB_WERROR_APPLIED 0)
+set(DB_OWN_COMPONENTS main)
 foreach(db_dir ${DB_OWN_COMPONENT_DIRS})
     if(IS_DIRECTORY ${db_dir})
         get_filename_component(db_comp ${db_dir} NAME)
-        if(TARGET __idf_${db_comp})
-            target_compile_options(__idf_${db_comp} PRIVATE -Wall -Wextra -Werror)
-            if(DB_EXTRA_WARNINGS)
-                foreach(db_flag ${DB_EXTRA_WARNING_FLAGS})
-                    string(REGEX REPLACE "^-W([^=]*).*" "-Wno-error=\\1" db_noerr ${db_flag})
-                    target_compile_options(__idf_${db_comp} PRIVATE ${db_flag} ${db_noerr})
-                endforeach()
-            endif()
-            math(EXPR DB_WERROR_APPLIED "${DB_WERROR_APPLIED} + 1")
+        list(APPEND DB_OWN_COMPONENTS ${db_comp})
+    endif()
+endforeach()
+set(DB_WERROR_APPLIED 0)
+foreach(db_comp ${DB_OWN_COMPONENTS})
+    if(TARGET __idf_${db_comp})
+        target_compile_options(__idf_${db_comp} PRIVATE -Wall -Wextra -Werror)
+        if(DB_EXTRA_WARNINGS)
+            target_compile_options(__idf_${db_comp} PRIVATE ${DB_EXTRA_WARNING_FLAGS} -Wno-error)
         endif()
+        math(EXPR DB_WERROR_APPLIED "${DB_WERROR_APPLIED} + 1")
     endif()
 endforeach()
 if(DB_WERROR_APPLIED EQUAL 0)
-    message(FATAL_ERROR "E1: -Werror gate matched ZERO pb_*/db_* components — "
+    message(FATAL_ERROR "E1: -Werror gate matched ZERO first-party components — "
                         "the ESP-IDF component-target naming may have changed")
 endif()
 message(STATUS "E1: -Wall -Wextra -Werror applied to ${DB_WERROR_APPLIED} first-party components")

@@ -116,6 +116,13 @@ int64_t esp_timer_get_time(void) { return env->now_us; }
 
 void host_critical_enter(portMUX_TYPE *mux)
 {
+    if (env->crit_depth == 0 && env->before_crit_hook) {
+        // Simulate a task switch just before the critical section. Interrupts
+        // are off inside it, so on the single core a switch cannot occur later.
+        void (*hook)(void) = env->before_crit_hook;
+        env->before_crit_hook = NULL;
+        hook();
+    }
     // ESP-IDF allows a task to take the same portMUX again (it counts the depth).
     ENV_REQUIRE(env->crit_depth == 0 || env->crit_mux == (void *)mux,
                 "nested critical section on a different portMUX");

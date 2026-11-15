@@ -88,25 +88,21 @@ static bool request_on_setup_ap(httpd_req_t *req)
 {
     esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     esp_netif_ip_info_t info = {0};
-    if (!ap || esp_netif_get_ip_info(ap, &info) != ESP_OK || info.ip.addr == 0) return false;
+    if (!ap || esp_netif_get_ip_info(ap, &info) != ESP_OK) return false;
+
+    uint8_t ap_ip[4];   // network byte order, as stored in info.ip.addr
+    memcpy(ap_ip, &info.ip.addr, sizeof ap_ip);
 
     struct sockaddr_storage local = {0};
     socklen_t len = sizeof local;
     if (getsockname(httpd_req_to_sockfd(req), (struct sockaddr *)&local, &len) != 0) return false;
-    uint32_t addr;   // network byte order, like info.ip.addr
-    if (local.ss_family == AF_INET) {
-        addr = ((struct sockaddr_in *)&local)->sin_addr.s_addr;
-    } else if (local.ss_family == AF_INET6) {
-        // The httpd listens on a dual-stack socket: IPv4 peers show as ::ffff:a.b.c.d.
-        // lwIP has no IN6_IS_ADDR_V4MAPPED: check the ::ffff:0:0/96 prefix here.
-        static const uint8_t v4mapped[12] = {0,0,0,0, 0,0,0,0, 0,0,0xff,0xff};
-        const uint8_t *a6 = ((const struct sockaddr_in6 *)&local)->sin6_addr.s6_addr;
-        if (memcmp(a6, v4mapped, sizeof v4mapped) != 0) return false;
-        memcpy(&addr, a6 + 12, sizeof addr);
-    } else {
-        return false;
-    }
-    return addr == info.ip.addr;
+    if (local.ss_family == AF_INET)
+        return pb_auth_local_addr_is(false,
+            (const uint8_t *)&((const struct sockaddr_in *)&local)->sin_addr, ap_ip);
+    if (local.ss_family == AF_INET6)   // dual-stack socket: IPv4 peers show as ::ffff:a.b.c.d
+        return pb_auth_local_addr_is(true,
+            ((const struct sockaddr_in6 *)&local)->sin6_addr.s6_addr, ap_ip);
+    return false;
 }
 
 static pb_auth_result_t auth_check(httpd_req_t *req)

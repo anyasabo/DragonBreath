@@ -38,6 +38,13 @@ pb_auth_result_t pb_auth_decide(const pb_auth_input_t *in);
 // without space (0x21-0x7E). Use it before a token is stored.
 bool pb_auth_token_valid(const char *token);
 
+// True if a socket's local address equals the IPv4 address ap_ip (4 bytes in
+// network order, as in sin_addr). addr is the 4-byte sin_addr (is_v6 false) or
+// the 16-byte sin6_addr (is_v6 true). An IPv6 address matches only in the
+// IPv4-mapped form ::ffff:a.b.c.d (dual-stack httpd socket). An ap_ip of
+// 0.0.0.0 never matches.
+bool pb_auth_local_addr_is(bool is_v6, const uint8_t *addr, const uint8_t ap_ip[4]);
+
 // Compare two tokens in time that does not depend on where they differ.
 // The loop always runs PB_AUTH_TOKEN_MAX steps. A length above
 // PB_AUTH_TOKEN_MAX never matches.

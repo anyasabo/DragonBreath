@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Host unit test for the pure auth decisions (no ESP/FreeRTOS deps).
+#define _POSIX_C_SOURCE 200112L   // inet_pton
 #include "pb_auth.h"
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +69,41 @@ static void test_token_valid(void)
     tok[PB_AUTH_TOKEN_MAX] = 'x';
     tok[PB_AUTH_TOKEN_MAX + 1] = '\0';
     CHECK(!pb_auth_token_valid(tok));               // one over
+}
+
+static void test_local_addr(void)
+{
+    uint8_t ap[4] = {192, 168, 4, 1};
+
+    // IPv4 socket.
+    struct sockaddr_in v4 = {0};
+    v4.sin_family = AF_INET;
+    CHECK(inet_pton(AF_INET, "192.168.4.1", &v4.sin_addr) == 1);
+    CHECK(pb_auth_local_addr_is(false, (const uint8_t *)&v4.sin_addr, ap));
+    CHECK(inet_pton(AF_INET, "192.168.1.50", &v4.sin_addr) == 1);   // the STA address
+    CHECK(!pb_auth_local_addr_is(false, (const uint8_t *)&v4.sin_addr, ap));
+
+    // Dual-stack IPv6 socket, IPv4 peer: ::ffff:a.b.c.d.
+    struct sockaddr_in6 v6 = {0};
+    v6.sin6_family = AF_INET6;
+    CHECK(inet_pton(AF_INET6, "::ffff:192.168.4.1", &v6.sin6_addr) == 1);
+    CHECK(pb_auth_local_addr_is(true, v6.sin6_addr.s6_addr, ap));
+    CHECK(inet_pton(AF_INET6, "::ffff:192.168.1.50", &v6.sin6_addr) == 1);
+    CHECK(!pb_auth_local_addr_is(true, v6.sin6_addr.s6_addr, ap));
+
+    // Native IPv6 never matches, also with the AP's IPv4 bytes at the end.
+    CHECK(inet_pton(AF_INET6, "fe80::1", &v6.sin6_addr) == 1);
+    CHECK(!pb_auth_local_addr_is(true, v6.sin6_addr.s6_addr, ap));
+    CHECK(inet_pton(AF_INET6, "::192.168.4.1", &v6.sin6_addr) == 1);       // v4-compatible
+    CHECK(!pb_auth_local_addr_is(true, v6.sin6_addr.s6_addr, ap));
+    CHECK(inet_pton(AF_INET6, "64:ff9b::192.168.4.1", &v6.sin6_addr) == 1); // NAT64
+    CHECK(!pb_auth_local_addr_is(true, v6.sin6_addr.s6_addr, ap));
+
+    // No AP address (AP down): never matches, also against 0.0.0.0.
+    uint8_t none[4] = {0, 0, 0, 0};
+    v4.sin_addr.s_addr = 0;
+    CHECK(!pb_auth_local_addr_is(false, (const uint8_t *)&v4.sin_addr, none));
+    CHECK(!pb_auth_local_addr_is(false, NULL, ap));
 }
 
 static pb_auth_input_t base(void)
@@ -192,6 +231,7 @@ int main(void)
 {
     test_token_equal();
     test_token_valid();
+    test_local_addr();
     test_decide_default_build();
     test_decide_require_token();
     test_decide_lockout_first();

@@ -313,7 +313,8 @@ to attack:
 1. **Set a control token** (Settings → Control token, or `POST /api/v2/token`). Use
    1-64 printable ASCII characters with no spaces. Give the same token to Klipper,
    the PrusaLink helper and each browser. The device compares the token in constant
-   time. On each HTTP 403, the dashboard forgets its stored token and asks again.
+   time. On an HTTP 403, the setup and settings pages forget the stored token and
+   ask for it again. Other dashboard controls show only an error.
 2. **Change the setup AP password.** The default `987654321` is public. In the
    default AP mode ("always"), the setup AP stays on next to your Wi-Fi.
 3. **Build options** (`idf.py menuconfig` → *DragonBreath HTTP API security*). All

@@ -25,6 +25,10 @@ below into the GitHub Release notes.
   read the body with one receive call. If TCP delivered the body in parts, the
   handler used only the first part, for example `max=6` of `max=60`. A
   `/settings` body longer than 127 bytes now gets HTTP 400, not a silent cut.
+### Changed
+- The HTTP server waits at most 3 s (was the ESP-IDF default of 5 s) for each
+  socket receive and send. The server has one task, so a slow or stalled LAN
+  client now holds it for a shorter time.
 
 ## [1.1.19] - 2026-09-23
 

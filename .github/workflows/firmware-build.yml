@@ -12,13 +12,10 @@ on:
       - 'sdkconfig.defaults'
       - 'sdkconfig.hil-*'
       - 'sdkconfig.debug-*'
-      - 'tools/hil.py'
-      - 'tools/smoke.py'
+      - 'tools/*.py'
       - 'tools/idf-build.sh'
       - '.idf-version'
       - 'tools/elf_check*'
-      - 'tools/ram_treemap.py'
-      - 'tools/jtag_profile.py'
       - '.github/workflows/firmware-build.yml'
   pull_request:
     paths:
@@ -30,13 +27,10 @@ on:
       - 'sdkconfig.defaults'
       - 'sdkconfig.hil-*'
       - 'sdkconfig.debug-*'
-      - 'tools/hil.py'
-      - 'tools/smoke.py'
+      - 'tools/*.py'
       - 'tools/idf-build.sh'
       - '.idf-version'
       - 'tools/elf_check*'
-      - 'tools/ram_treemap.py'
-      - 'tools/jtag_profile.py'
   workflow_dispatch:
 
 # Least-privilege GITHUB_TOKEN: the build only needs to read code and upload
@@ -192,6 +186,9 @@ jobs:
 
       - name: Check script dependencies (PEP 723)
         run: python3 -m unittest tests/test_script_deps.py
+
+      - name: Test flash.py helpers
+        run: python3 -m unittest tests/test_flash_tool.py
 
       # E1 static analysis: cppcheck over OUR OWN code (components/ + main/). Fails on
       # any error/warning/performance/portability finding (--error-exitcode). The C

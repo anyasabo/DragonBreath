@@ -41,6 +41,7 @@ import argparse
 import datetime
 import hashlib
 import os
+import re
 import subprocess
 import sys
 
@@ -102,15 +103,33 @@ def run_esptool(port, bauds, *args):
 ESPTOOL_MAJOR = 5   # the command names below are the esptool 5 names
 
 
+def esptool_version(output):
+    """Return (major, version) from the output of `esptool version`.
+
+    esptool 5 prints "esptool v5.6.0" then "5.6.0". esptool 4 prints
+    "esptool.py v4.8.1" then "4.8.1". Other lines (warnings) are ignored.
+    Returns (None, None) if no version is in the output."""
+    m = re.search(r"(?m)^(?:esptool(?:\.py)? v)?((\d+)\.\d+\S*)\s*$", output)
+    return (int(m.group(2)), m.group(1)) if m else (None, None)
+
+
+def script_command(argv0):
+    """The command that runs this script again with uv, for messages.
+
+    A user who downloaded only flash.py runs `uv run flash.py`, not
+    `uv run tools/flash.py`. Thus use the path that started this script."""
+    return f'uv run "{argv0}"' if " " in argv0 else f"uv run {argv0}"
+
+
 def check_esptool():
     """Return True if this Python has esptool 5. Else print how to get it."""
     try:
-        out = subprocess.check_output([sys.executable, "-m", "esptool", "version"],
-                                      stderr=subprocess.STDOUT, text=True)
-        found = out.strip().splitlines()[-1].strip()
-        major = int(found.split(".")[0].lstrip("v"))
-    except (OSError, subprocess.CalledProcessError, ValueError, IndexError):
-        found, major = None, None
+        out = subprocess.run([sys.executable, "-m", "esptool", "version"],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, check=False).stdout
+    except OSError:
+        out = ""
+    major, found = esptool_version(out)
     if major == ESPTOOL_MAJOR:
         return True
     if found is None:
@@ -120,9 +139,16 @@ def check_esptool():
               f"{ESPTOOL_MAJOR} (the command names changed in esptool 5).")
     print("       Run the tool with uv. uv reads the dependencies at the top of")
     print("       this file and installs esptool for this run:")
-    print("         uv run tools/flash.py ...")
-    print("       Or install the requirement into this exact interpreter:")
-    print(f'         "{sys.executable}" -m pip install "esptool>={ESPTOOL_MAJOR},<{ESPTOOL_MAJOR + 1}"')
+    print(f"         {script_command(sys.argv[0])} ...")
+    if os.environ.get("IDF_PYTHON_ENV_PATH") or os.environ.get("IDF_PATH"):
+        # ESP-IDF 5.x pins esptool 4. esptool 5 in its Python breaks idf.py.
+        print("       Do not install esptool 5 into the ESP-IDF Python: ESP-IDF")
+        print("       needs its own esptool 4. Use uv, or run from a shell")
+        print("       without the ESP-IDF environment.")
+    else:
+        print("       Or install the requirement into this exact interpreter:")
+        print(f'         "{sys.executable}" -m pip install '
+              f'"esptool>={ESPTOOL_MAJOR},<{ESPTOOL_MAJOR + 1}"')
     return False
 
 
@@ -297,7 +323,7 @@ def main():
             return 1
         print(f"\nStock backup saved: {path}")
         print("Keep it safe — copy it off this machine (cloud/USB). Restore with:")
-        print(f"  uv run tools/flash.py --restore {path}")
+        print(f"  {script_command(sys.argv[0])} --restore {path}")
         return 0
 
     print("=" * 70)
@@ -336,7 +362,7 @@ def main():
         print("Wi-Fi it starts an 'DragonBreath_XXXX' AP — connect and open http://192.168.4.1")
     else:
         print("\nFlash FAILED. If the board is unresponsive, restore your backup:")
-        print("  uv run tools/flash.py --restore <backup.bin>")
+        print(f"  {script_command(sys.argv[0])} --restore <backup.bin>")
     return rc
 
 

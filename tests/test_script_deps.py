@@ -41,6 +41,19 @@ def requirement_name(requirement):
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def is_python_command(node):
+    """True for a command list that starts with sys.executable or a python."""
+    if not node.elts:
+        return False
+    first = node.elts[0]
+    if isinstance(first, ast.Attribute):
+        return (first.attr == "executable" and isinstance(first.value, ast.Name)
+                and first.value.id == "sys")
+    return (isinstance(first, ast.Constant) and isinstance(first.value, str)
+            and re.fullmatch(r"(.*[/\\])?(python|py)(\d+(\.\d+)?)?(\.exe)?",
+                             first.value) is not None)
+
+
 def needed_distributions(source):
     """Third-party distributions that the script imports or runs with -m."""
     local = {p.stem for p in TOOLS.glob("*.py")}
@@ -51,12 +64,11 @@ def needed_distributions(source):
             modules |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             modules.add(node.module.split(".")[0])
-        elif isinstance(node, (ast.List, ast.Tuple)):
+        elif isinstance(node, (ast.List, ast.Tuple)) and is_python_command(node):
             # [sys.executable, "-m", "esptool", ...]
             values = [e.value if isinstance(e, ast.Constant) else None for e in node.elts]
-            for i, v in enumerate(values[:-1]):
-                if v == "-m" and isinstance(values[i + 1], str):
-                    modules.add(values[i + 1].split(".")[0])
+            if len(values) > 2 and values[1] == "-m" and isinstance(values[2], str):
+                modules.add(values[2].split(".")[0])
     third_party = {m for m in modules
                    if m not in sys.stdlib_module_names and m not in local}
     return {requirement_name(DISTRIBUTION.get(m, m)) for m in third_party}
@@ -77,6 +89,10 @@ class ScriptMetadataParse(unittest.TestCase):
     def test_finds_dash_m(self):
         source = 'import sys\ncmd = [sys.executable, "-m", "esptool", "version"]\n'
         self.assertEqual(needed_distributions(source), {"esptool"})
+
+    def test_ignores_dash_m_of_other_programs(self):
+        source = 'cmd = ["git", "commit", "-m", "msg"]\n'
+        self.assertEqual(needed_distributions(source), set())
 
     def test_maps_import_name(self):
         self.assertEqual(needed_distributions("import serial\n"), {"pyserial"})

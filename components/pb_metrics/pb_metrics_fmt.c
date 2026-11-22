@@ -210,11 +210,13 @@ static void put_i64(writer_t *w, int64_t v)
 // Write v / 10^decimals with exactly `decimals` digits after the point.
 static void put_fixed(writer_t *w, uint64_t v, unsigned decimals)
 {
+    // The callers pass 1, 3 or 6. frac holds at most 8 digits: clamp, never overflow.
+    if (decimals > 8) decimals = 8;
     uint64_t scale = 1;
     for (unsigned i = 0; i < decimals; i++) scale *= 10u;
     put_u64(w, v / scale);
     put(w, ".", 1);
-    char frac[8];
+    char frac[8] = {0};
     uint64_t f = v % scale;
     for (unsigned i = decimals; i > 0; i--) {
         frac[i - 1] = (char)('0' + (f % 10u));

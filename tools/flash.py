@@ -100,6 +100,59 @@ def run_esptool(port, bauds, *args):
     return rc, bauds[-1]
 
 
+# The full backup is read in chunks. esptool streams a read as 4 KB frames
+# with up to 64 frames in flight, and one lost byte stops the whole read
+# ("Corrupt data, expected 0x1000 bytes but received 0xfe6 bytes"). On a
+# Panda Breath with a CH340K and the macOS WCH driver, about 1 frame in 100
+# lost bytes at 115200, 230400 and 460800 baud, so a single 4 MB read (1024
+# frames) almost never completed. esptool checks each read against an MD5
+# digest from the chip, so a chunk that reads without error is correct.
+# Only a failed chunk is read again.
+READ_CHUNK = 0x20000          # 128 KB: 32 frames
+CHUNK_TRIES_PER_BAUD = 3
+
+
+def read_flash_chunked(port, bauds, path, size=FLASH_SIZE, chunk=READ_CHUNK):
+    """Read `size` bytes of flash into `path`, `chunk` bytes at a time.
+
+    Each chunk gets CHUNK_TRIES_PER_BAUD tries at each rate of `bauds`. A
+    chunk that fails at all rates stops the read and removes `path`.
+    Returns True on success."""
+    part = path + ".part"
+    total = size // chunk
+    ok = False
+    try:
+        with open(path, "wb") as out:
+            for n, offset in enumerate(range(0, size, chunk), start=1):
+                if not read_one_chunk(port, bauds, offset, chunk, part, n, total):
+                    return False
+                with open(part, "rb") as f:
+                    out.write(f.read())
+        ok = True
+        return True
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+        if not ok and os.path.exists(path):
+            os.remove(path)
+
+
+def read_one_chunk(port, bauds, offset, length, part, n, total):
+    for b in bauds:
+        for attempt in range(1, CHUNK_TRIES_PER_BAUD + 1):
+            print(f"      chunk {n}/{total} at {offset:#08x}, {b} baud, try {attempt}")
+            if os.path.exists(part):
+                os.remove(part)
+            # no-reset: the chip stays in the loader. A hard reset boots the app
+            # between chunks, and the app can write NVS during the backup.
+            rc = run(esptool_cmd(port, b, "--after", "no-reset",
+                                 "read-flash", hex(offset), hex(length), part))
+            if rc == 0 and os.path.exists(part) and os.path.getsize(part) == length:
+                return True
+    print(f"ERROR: chunk {n}/{total} at {offset:#08x} failed at all baud rates.")
+    return False
+
+
 ESPTOOL_MAJOR = 5   # the command names below are the esptool 5 names
 
 
@@ -174,9 +227,9 @@ def do_backup(port, bauds, backup_dir):
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     path = os.path.join(backup_dir, f"stock-{stamp}.bin")
     print(f"\n[1/3] Backing up the full {FLASH_SIZE // (1024*1024)} MB flash -> {path}")
-    print("      (this reads the WHOLE chip; ~1-2 min. Do not unplug.)")
-    rc, baud = run_esptool(port, bauds, "read-flash", "0", hex(FLASH_SIZE), path)
-    if rc != 0:
+    print(f"      (this reads the WHOLE chip in {READ_CHUNK // 1024} KB chunks; "
+          "a few minutes. Do not unplug.)")
+    if not read_flash_chunked(port, bauds, path):
         print("ERROR: backup read failed at all baud rates — NOT flashing. Fix the "
               "connection (cable/port) and retry.")
         return None, None
@@ -195,7 +248,8 @@ def do_backup(port, bauds, backup_dir):
               f"0x{magic.hex() or '??'}. The read looks blank/corrupt — NOT flashing.")
         return None, None
     print("      verifying backup against the chip (hash)...")
-    if run(esptool_cmd(port, baud, "verify-flash", "0x0", path)) != 0:
+    rc, baud = run_esptool(port, bauds, "verify-flash", "0x0", path)
+    if rc != 0:
         print("ERROR: backup failed hash verification against the chip — NOT flashing.")
         return None, None
 

@@ -1,6 +1,6 @@
 # About this fork
 
-This repository is a fork of [plastikman/DragonBreath](https://github.com/plastikman/DragonBreath). It adds safety fixes, security fixes, diagnostics and tests. Each change is also proposed upstream. When upstream merges a change, the fork drops its copy.
+This repository is a fork of [plastikman/DragonBreath](https://github.com/plastikman/DragonBreath). It adds safety fixes, security fixes, diagnostics, tests and supply-chain checks. Each change is also proposed upstream. When upstream merges a change, the fork drops its copy.
 
 **Status:** the fork runs on one Panda Breath V1.1 (slim) with PCB V1.0.1, on a Prusa CORE One L with PrusaLink. It has not completed a heat test on mains power yet. If you want a firmware that other users run, use the upstream release until then.
 
@@ -38,20 +38,28 @@ These changes affect the use of a release build of this fork. Read them before y
 
 The [API documentation](api-v2.md) and [SAFETY.md](SAFETY.md) on this branch include these changes.
 
+## Checks
+
+- **CI** runs on each push to `fork` and each Monday: host tests with gcc-16 and with clang-23 + ASan/UBSan, coverage, cppcheck 2.21, the fuzzers, the release build, a build with ESP-IDF v5.3.6, static checks on the ELF and the SBOM checks.
+- **Compiler checks:** the product and dragon-core components build with `-Werror` and more warnings as errors. `-DDB_EXTRA_WARNINGS=ON -DDB_ANALYZER=ON` makes an analysis build with more warnings and the GCC static analyzer.
+- **SBOM, CVEs and licenses:** [`tools/sbom/sbom.sh`](../tools/sbom/sbom.sh) makes SPDX and CycloneDX SBOMs of the linked components. It checks them with `esp-idf-sbom check` and Grype, and with VulnCheck NVD++ when a token is set. [`tools/sbom/vex.json`](../tools/sbom/vex.json) (OpenVEX) gives the reason for each reported CVE that does not apply to the image. A CVE only reports and does not fail CI. The license check fails on a copyleft or an unknown license in the image.
+- **Reproducible images:** the same commit and the same ESP-IDF version give the same image, also in CI. Thus you can check a release against the source.
+
 ## Changes and their upstream status
 
-"Draft" means that the issue or PR text is ready and not posted yet.
+"Draft N" means that the issue or PR text is ready and not posted yet. Lower numbers go first.
 
 ### Safety and security
 
 | Change | Branch | Upstream |
 | --- | --- | --- |
-| A hazard trip on top of a RAM-only latch goes to NVS. A failed clear leaves flash latched. | `fix/heater-fault-persist-only` (PR), `fix/heater-fault-persist` (with the host test) | Draft |
-| The setup portal closes its open routes after a late Wi-Fi join. The Wi-Fi scan needs auth in station mode. | dragon-core `fix/portal-setup-auth` (from `fix/portal-late-join` and `fix/portal-scan-auth`) | Draft |
-| A stalled client cannot hold the web server. Bodies are read in full. | `fix/httpd-body-read`, `fix/httpd-timeouts` | Draft |
-| The same fix for the portal and the OTA upload | dragon-core `fix/portal-body-read` | Draft |
-| `/settings` checks all fields before it applies one. Zone targets are clamped. | `fix/httpd-settings-validate` | Draft |
-| Auth on presets and the Bambu scan. Constant-time token compare. Optional "require token" and lockout. | `feat/auth-hardening` | Draft |
+| A hazard trip on top of a RAM-only latch goes to NVS. A failed clear leaves flash latched. | `fix/heater-fault-persist-only` (PR), `fix/heater-fault-persist` (with the host test) | Draft 1 (wave 1) |
+| The setup portal closes its open routes after a late Wi-Fi join. The Wi-Fi scan needs auth in station mode. | dragon-core `fix/portal-setup-auth` | Draft 2 (wave 1) |
+| A stalled client cannot hold the web server. Bodies are read in full. | `fix/httpd-body-read`, `fix/httpd-timeouts` | Draft 7 (wave 2) |
+| The same fix for the portal and the OTA upload | dragon-core `fix/portal-body-read` | Draft 8 (wave 2) |
+| `/settings` checks all fields before it applies one. Zone targets are clamped. | `fix/httpd-settings-validate` | Draft 6 (wave 2) |
+| Auth on presets and the Bambu scan. Constant-time token compare. | `fix/portal-auth-presets-scan` (PR) | Draft 9 (wave 2) |
+| Optional "require token" and auth lockout | `feat/auth-hardening` | Later |
 | Fail-closed first-heat check | `feat/first-heat-check` | Waits for a capture from real hardware |
 
 ### Diagnostics
@@ -67,35 +75,37 @@ The [API documentation](api-v2.md) and [SAFETY.md](SAFETY.md) on this branch inc
 
 | Change | Branch | Upstream |
 | --- | --- | --- |
+| One host-test runner, sanitizer CI matrix, coverage | `ci/host-test-hardening` | Draft 17 (wave 1) |
+| Reproducible release images | `build/reproducible` | Draft 18 (wave 2) |
+| cppcheck 2.21 in a container | `ci/cppcheck-2.21` | Draft 19 (wave 2) |
+| `-Werror` on `db_*` and `main` | `build/werror-db-main` (PR) | Draft 4 (wave 2) |
+| Release checksums list only the published files. The manifest lists all components. | `fix/release-assets` | Draft 3 (wave 2) |
+| ESP-IDF v6.1 support (v5.3 support ends in January 2027) | `build/idf-v6`, dragon-core `deps/led-strip-3`, `build/idf-v6-core` | Draft 11: the issue in wave 1, the PRs later |
 | Host test of the real `pb_heater.c` with randomized invariants | `test/heater-control-tick` | Offered with the fault-latch fix |
 | libFuzzer for the HTTP handlers and the dragon-core parsers | `test/fuzz-http-handlers`, dragon-core `test/fuzz-parsers` | Not proposed yet |
-| One host-test runner, sanitizer CI matrix, coverage | `ci/host-test-hardening` | Not proposed yet |
 | Static checks on the ELF (calls from the control task, worst-case stack) | `ci/elf-static-checks` | Not proposed yet |
-| `-Werror` on `db_*` and `main` | `build/werror-all-first-party` | Draft |
 | `.idf-version` is the one place for the ESP-IDF version | `build/idf-version-file` | Not proposed yet |
-| Release checksums list only the published files. The manifest lists all components. | `fix/release-assets` | Draft |
-| SBOM (SPDX) in CI and releases, Dependabot for actions | `deps/sbom-dependabot` | Not proposed yet |
+| SBOM (SPDX) in CI and releases | `deps/sbom-dependabot` | Not proposed yet |
 | `flash.py` and `hil.py` declare their dependencies (PEP 723). The flash backup is read in chunks. | `build/pep723-script-deps`, `fix/flash-read-chunked` | Not proposed yet |
 | Smoke test, capture and replay tools | `feat/network-smoke-test`, `feat/capture-tools` | Not proposed yet |
-| ESP-IDF v6.1 support (v5.3 support ends in January 2027) | `build/idf-v6`, dragon-core `deps/led-strip-3`, `build/idf-v6-core` | Draft (dragon-core issue first) |
 
 ### Fork-only
 
 These commits stay in this fork. They are not for upstream.
 
-- The release settings in [`sdkconfig.release`](../sdkconfig.release): require a token, AP mode "fallback".
-- The pins to the dragon-core fork and `dependencies.lock` in git.
-- ESP-IDF v6.1.1 in [`.idf-version`](../.idf-version) and its `dependencies.lock`. CI also checks that the code builds with v5.3.6.
-- Stricter compiler checks in [`CMakeLists.txt`](../CMakeLists.txt): the dragon-core components get the same `-Werror` flags as the product components, and more warnings are errors (`DB_STRICT_WARNING_FLAGS`). `-DDB_EXTRA_WARNINGS=ON -DDB_ANALYZER=ON` makes an analysis build with more warnings and the GCC static analyzer.
-- The run-time checks in `sdkconfig.release`: stack protector `strong` and light heap poisoning.
-- The CI trigger for the branch `fork`, newer action versions, and the fuzz job in the same container as the host tests. The Pages workflow is turned off on the fork.
+- The release settings in [`sdkconfig.release`](../sdkconfig.release): require a token, AP mode "fallback", stack protector `strong`, light heap poisoning.
+- The pins to the dragon-core fork, and `dependencies.lock` in git.
+- ESP-IDF v6.1.1 in [`.idf-version`](../.idf-version). CI also checks that the code builds with v5.3.6.
+- The compiler checks in [`CMakeLists.txt`](../CMakeLists.txt) beyond `build/werror-db-main`: `-Werror` for the dragon-core components, `DB_STRICT_WARNING_FLAGS`, the analysis build.
+- The SBOM, CVE and license tools in [`tools/sbom/`](../tools/sbom/), and the release assets that they make.
+- CI: the trigger for `fork`, clang-23 from apt.llvm.org, the container image pinned by digest, a weekly run, [Renovate](../renovate.json). The Pages workflow is turned off on the fork.
 - Integration fixes for two topic branches together. Example: `/settings` refuses `swap_thermistors` together with `first_heat_apply_swap` (from `feat/first-heat-check` and `fix/httpd-settings-validate`). Others adapt the fuzzers, the ELF check allowlist and the release manifest to all branches together.
 
 To list the fork-only commits: `git log --oneline --no-merges upstream/main..fork`, then remove the commits of each topic branch.
 
 ## Install
 
-The fork has no release yet. Build the image from the branch `fork` with the release settings. Give the build its own `sdkconfig`: ESP-IDF applies the defaults files only to a new `sdkconfig`, and an old `./sdkconfig` from a dev build has no token requirement.
+The fork has no published release yet. Build the image from the branch `fork` with the release settings, in an empty build directory. Give the build its own `sdkconfig`: ESP-IDF applies the defaults files only to a new `sdkconfig`, and an old `./sdkconfig` from a dev build has no token requirement.
 
 ```bash
 ./tools/idf-build.sh . esp32c3 build-release -DSDKCONFIG="$PWD/build-release/sdkconfig" -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.release" build

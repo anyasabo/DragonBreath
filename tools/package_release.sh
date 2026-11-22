@@ -87,6 +87,9 @@ Verify downloads first:  sha256sum -c SHA256SUMS.txt
 EOF
 
 # 4. provenance manifest (per-artifact SHA-256)
+# CORE_REF and CORE_SRC come from dc_portal. They are true for all components
+# only if all components have the same pin.
+sh "$(dirname -- "$0")/check_core_pins.sh" main/idf_component.yml
 CORE_REF="${CORE_REF:-$(awk '/^  dc_portal:/{found=1} found && /^    version:/{print $2; exit}' main/idf_component.yml)}"
 # Every dependency in main/idf_component.yml that comes from the dragon-core repo.
 CORE_COMPONENTS="$(awk '/^  [A-Za-z0-9_.-]+:$/{name=$1; sub(/:$/, "", name)}

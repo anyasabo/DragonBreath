@@ -40,9 +40,9 @@ The [API documentation](api-v2.md) and [SAFETY.md](SAFETY.md) on this branch inc
 
 ## Checks
 
-- **CI** runs on each push to `fork` and each Monday: host tests with gcc-16 and with clang-23 + ASan/UBSan, coverage, cppcheck 2.21, the fuzzers, the release build, a build with ESP-IDF v5.3.6, static checks on the ELF and the SBOM checks.
+- **CI** runs on each push to `fork` and each Monday. It runs the host tests with gcc-16 and with clang-23 + ASan/UBSan, and coverage. It also runs cppcheck 2.21, the fuzzers, the release build, a build with ESP-IDF v5.3.6, the static checks on the ELF and the SBOM checks.
 - **Compiler checks:** the product and dragon-core components build with `-Werror` and more warnings as errors. `-DDB_EXTRA_WARNINGS=ON -DDB_ANALYZER=ON` makes an analysis build with more warnings and the GCC static analyzer.
-- **SBOM, CVEs and licenses:** [`tools/sbom/sbom.sh`](../tools/sbom/sbom.sh) makes SPDX and CycloneDX SBOMs of the linked components. It checks them with `esp-idf-sbom check` and Grype, and with VulnCheck NVD++ when a token is set. [`tools/sbom/vex.json`](../tools/sbom/vex.json) (OpenVEX) gives the reason for each reported CVE that does not apply to the image. A CVE only reports and does not fail CI. The license check fails on a copyleft or an unknown license in the image.
+- **SBOM, CVEs and licenses:** [`tools/sbom/sbom.sh`](../tools/sbom/sbom.sh) makes SPDX and CycloneDX SBOMs of the linked components. It checks them with `esp-idf-sbom check` and Grype. If a token is set, it also checks them with VulnCheck NVD++. [`tools/sbom/vex.json`](../tools/sbom/vex.json) (OpenVEX) gives the reason for each reported CVE that does not apply to the image. A CVE only reports and does not fail CI. The license check fails on a copyleft or an unknown license in the image.
 - **Reproducible images:** the same commit and the same ESP-IDF version give the same image, also in CI. Thus you can check a release against the source.
 
 ## Changes and their upstream status

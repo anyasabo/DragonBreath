@@ -12,7 +12,7 @@ on:
       - 'sdkconfig.defaults'
       - 'sdkconfig.hil-*'
       - 'sdkconfig.debug-*'
-      - 'tools/hil.py'
+      - 'tools/*.py'
       - 'tools/idf-build.sh'
       - '.github/workflows/firmware-build.yml'
   pull_request:
@@ -25,7 +25,7 @@ on:
       - 'sdkconfig.defaults'
       - 'sdkconfig.hil-*'
       - 'sdkconfig.debug-*'
-      - 'tools/hil.py'
+      - 'tools/*.py'
       - 'tools/idf-build.sh'
   workflow_dispatch:
 
@@ -84,6 +84,9 @@ jobs:
 
       - name: Check script dependencies (PEP 723)
         run: python3 -m unittest tests/test_script_deps.py
+
+      - name: Test flash.py helpers
+        run: python3 -m unittest tests/test_flash_tool.py
 
       # E1 static analysis: cppcheck over OUR OWN code (components/ + main/). Fails on
       # any error/warning/performance/portability finding (--error-exitcode). The C

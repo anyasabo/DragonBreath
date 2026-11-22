@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.9"
 # dependencies = ["pyserial>=3.5,<4"]
 # ///
 """Build, flash, drive, and report DragonBreath serial HIL scenarios."""
@@ -147,8 +147,8 @@ class SerialTransport:
             import serial
         except ImportError as exc:
             raise HilError(
-                "pyserial is required for HIL I/O; run with `uv run tools/hil.py`, "
-                "or from the ESP-IDF 5.3 environment (source ~/esp/esp-idf/export.sh)"
+                "pyserial is required for HIL I/O; run from the ESP-IDF 5.3 "
+                "environment (source ~/esp/esp-idf/export.sh)"
             ) from exc
         self.serial = serial.Serial(
             port=None, baudrate=baud, timeout=0.2, write_timeout=1.0

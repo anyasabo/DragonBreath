@@ -91,6 +91,3 @@ panel LEDs flash 3× to confirm, then the board reboots erased).
   renamed the commands.
 - `flash.py` needs only the Python standard library and esptool. It needs nothing
   else from the repo.
-- For a full USB *install* (not just backup/restore), download the release's
-  `dragonbreath-<ver>-install-bundle.zip` instead — it bundles `flash.py` with all
-  the firmware artifacts; unzip and run `uv run flash.py --build-dir .`.

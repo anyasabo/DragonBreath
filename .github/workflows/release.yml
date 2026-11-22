@@ -74,7 +74,7 @@ jobs:
           install="$(cat <<EOF
           **Install (no USB — recommended):** on the stock Panda web UI ("Firmware Update"), upload \`dragonbreath-${VERSION}.bin\`. It installs as an app through the stock firmware's own OTA — the stock bootloader/partitions stay in place, so you can revert to Panda later over WiFi.
           **Update / revert (already on DragonBreath):** upload \`dragonbreath-${VERSION}.bin\` via \`/fw\`; to return to Panda, upload your stock backup's **app** image via \`/fw\`.
-          **Recovery only (USB):** from a source checkout, \`python3 tools/flash.py\` (backs up stock first). The full/factory image is not published — build it locally if you need it.
+          **Recovery only (USB):** from a source checkout, \`uv run tools/flash.py\` (backs up stock first). The full/factory image is not published — build it locally if you need it.
 
           > **Alpha/beta testers:** if your unit was USB-flashed, **restore your stock backup first, then install this via the stock updater** — a stock-layout install can't be reached by OTA from a native-layout one.
 

@@ -8,6 +8,11 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # Size-optimize (the app slot is ~1.8MB; stock image is ~1.3MB)
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# Reproducible images: no build date or time in the app descriptor, and no build
+# paths in the ELF (whose SHA-256 is in the image). Then the same source and
+# ESP-IDF give the same image in CI and on a local machine, and a user can check
+# a release against the source.
+CONFIG_APP_REPRODUCIBLE_BUILD=y
 
 # Kconfig defaults production images to UART0 (CH340K USB-C bridge, GPIO21/20).
 # Do not pin the choice here: the safe dev-board HIL overlay deliberately selects

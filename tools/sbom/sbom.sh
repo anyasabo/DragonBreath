@@ -2,7 +2,10 @@
 # SBOM, license check and vulnerability scans of the firmware image. CI and local runs use this script.
 #
 #   tools/sbom/sbom.sh create BUILD_DIR OUT_DIR   SBOMs, license check, notices, esp-idf-sbom check
-#   tools/sbom/sbom.sh scan OUT_DIR               Grype on the CycloneDX SBOM of OUT_DIR
+#   tools/sbom/sbom.sh scan OUT_DIR               Grype on the CycloneDX SBOM of OUT_DIR, and a check for
+#                                                 new releases of watched components (cJSON)
+#   tools/sbom/sbom.sh nvdpp OUT_DIR              VulnCheck NVD++: CVEs that NVD has not analysed yet.
+#                                                 Needs VULNCHECK_TOKEN (free community account).
 #
 # "create" must run where ESP-IDF built BUILD_DIR: project_description.json has absolute paths.
 # In CI that is the ESP-IDF container. "scan" can run anywhere and needs grype on PATH
@@ -106,9 +109,59 @@ if m:
             print(f"| {v.get('severity', '?')} | {a['name']} | {a['version']} | {v['id']} |")
 print()
 EOF
+    # cJSON has no fixed release for its 2026 CVEs (tools/sbom/vex.json). When a newer release
+    # exists, bump espressif/cjson and review the cJSON statements. Renovate cannot see the ESP
+    # Component Registry, so this check is the reminder.
+    python3 -I - "$out/dragonbreath.cdx.json" >> "$out/summary.md" <<'EOF' || true
+import json, sys, urllib.request
+have = next((c["version"] for c in json.load(open(sys.argv[1]))["components"] if c.get("name") == "cJSON"), None)
+req = urllib.request.Request("https://api.github.com/repos/DaveGamble/cJSON/releases/latest",
+                             headers={"User-Agent": "dragonbreath-sbom"})
+latest = json.load(urllib.request.urlopen(req, timeout=30))["tag_name"].lstrip("v")
+print("## Watched components")
+print()
+if have and latest != have:
+    print(f"- **cJSON {latest} is released; the image has {have}.** Bump espressif/cjson and review the cJSON statements in tools/sbom/vex.json.")
+else:
+    print(f"- cJSON: the image has {have}, the latest release is {latest}.")
+print()
+EOF
+    ;;
+nvdpp)
+    [ $# -eq 2 ] || { echo "usage: $0 nvdpp OUT_DIR" >&2; exit 2; }
+    out=$2
+    [ -n "${VULNCHECK_TOKEN:-}" ] || { echo "sbom.sh: VULNCHECK_TOKEN is not set" >&2; exit 2; }
+    cache=${XDG_CACHE_HOME:-$HOME/.cache}/vulncheck
+    export_zip="$cache/nist-nvd2-$(date -u +%F).zip"
+    mkdir -p "$cache"
+    if [ ! -f "$export_zip" ]; then
+        # The token goes on stdin, not on the command line.
+        url=$(printf 'header = "Authorization: Bearer %s"\n' "$VULNCHECK_TOKEN" |
+            curl -fsS -K - -A dragonbreath-sbom/1 https://api.vulncheck.com/v3/backup/nist-nvd2 |
+            python3 -I -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["url"])')
+        curl -fsSL -o "$export_zip.tmp" "$url"
+        mv "$export_zip.tmp" "$export_zip"
+        find "$cache" -name 'nist-nvd2-*.zip' ! -name "$(basename "$export_zip")" -delete
+    fi
+    python3 -I "$here/match_nvdpp.py" --json "$out/dragonbreath.cdx.json" "$export_zip" \
+        --vex "$out/esp-idf.vex.json" --vex "$here/vex.json" > "$out/nvdpp.json"
+    python3 -I - "$out/nvdpp.json" >> "$out/summary.md" <<'EOF'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+print("## NVD++ (CVEs that NVD has not analysed yet)")
+print()
+print(f"- Open matches: {len(rows)}. Data: NVD++ by VulnCheck (https://vulncheck.com/nvd2).")
+if rows:
+    print()
+    print("| component | CVE | NVD status | source |")
+    print("|---|---|---|---|")
+    for r in rows:
+        print(f"| {r['component']} | {r['cve']} | {r['status'] or ''} | {'+'.join(r['sources'])} |")
+print()
+EOF
     ;;
 *)
-    echo "usage: $0 create BUILD_DIR OUT_DIR | scan OUT_DIR" >&2
+    echo "usage: $0 create BUILD_DIR OUT_DIR | scan OUT_DIR | nvdpp OUT_DIR" >&2
     exit 2
     ;;
 esac

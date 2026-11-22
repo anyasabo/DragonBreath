@@ -280,13 +280,22 @@ jobs:
           path: '.'
           command: sh tools/sbom/sbom.sh create build build/sbom
 
+      # NVD++ runs only if the repository has the secret VULNCHECK_TOKEN (a free VulnCheck
+      # community token). It finds CVEs that NVD has not analysed yet.
       - name: Scan SBOM for vulnerabilities (report only)
         continue-on-error: true
-        timeout-minutes: 20
+        timeout-minutes: 30
+        env:
+          VULNCHECK_TOKEN: ${{ secrets.VULNCHECK_TOKEN }}
         run: |
           sudo sh tools/ci/install-scanners.sh
           sudo chown -R "$(id -u)" build/sbom
           sh tools/sbom/sbom.sh scan build/sbom
+          if [ -n "$VULNCHECK_TOKEN" ]; then
+            sh tools/sbom/sbom.sh nvdpp build/sbom
+          else
+            printf '## NVD++\n\n- Not run: the secret VULNCHECK_TOKEN is not set.\n' >> build/sbom/summary.md
+          fi
           cat build/sbom/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload SBOM

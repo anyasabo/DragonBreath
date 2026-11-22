@@ -3,7 +3,7 @@
   "@id": "https://github.com/anyasabo/DragonBreath/blob/fork/tools/sbom/vex.json",
   "author": "DragonBreath fork (anyasabo)",
   "timestamp": "2026-11-22T21:00:00Z",
-  "version": 2,
+  "version": 3,
   "statements": [
     {
       "vulnerability": {
@@ -118,6 +118,126 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
       "impact_statement": "The CVE is about the Ubuntu wpa_supplicant package: a local user loads a shared object through D-Bus or the control interface. The ESP-IDF wpa_supplicant component builds neither D-Bus nor the control interface (components/wpa_supplicant/CMakeLists.txt has no ctrl_iface or dbus source), and the firmware has no dynamic loader or local users."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-8836",
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-8836"
+      },
+      "products": [
+        {
+          "@id": "pkg:github/espressif/esp-lwip@c6f2f878e7b0f86033214b85547d579be43351e3",
+          "identifiers": {
+            "purl": "pkg:github/espressif/esp-lwip@c6f2f878e7b0f86033214b85547d579be43351e3",
+            "cpe23": "cpe:2.3:a:lwip_project:lwip:2.2.0:*:*:*:*:*:*:*"
+          }
+        },
+        {
+          "@id": "cpe:2.3:a:lwip:lwip:2.2.0:*:*:*:*:*:*:*",
+          "identifiers": {
+            "cpe23": "cpe:2.3:a:lwip:lwip:2.2.0:*:*:*:*:*:*:*"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The lwIP SNMP agent (src/apps/snmp) is not in the image: ESP-IDF's lwip component does not build it, and the release ELF has no snmp_ symbols."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-119053",
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-119053"
+      },
+      "products": [
+        {
+          "@id": "pkg:github/espressif/esp-lwip@c6f2f878e7b0f86033214b85547d579be43351e3",
+          "identifiers": {
+            "purl": "pkg:github/espressif/esp-lwip@c6f2f878e7b0f86033214b85547d579be43351e3",
+            "cpe23": "cpe:2.3:a:lwip_project:lwip:2.2.0:*:*:*:*:*:*:*"
+          }
+        },
+        {
+          "@id": "cpe:2.3:a:lwip:lwip:2.2.0:*:*:*:*:*:*:*",
+          "identifiers": {
+            "cpe23": "cpe:2.3:a:lwip:lwip:2.2.0:*:*:*:*:*:*:*"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The lwIP SNMP agent (src/apps/snmp) is not in the image: ESP-IDF's lwip component does not build it, and the release ELF has no snmp_ symbols."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-112062",
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-112062"
+      },
+      "products": [
+        {
+          "@id": "pkg:github/espressif/esp-lwip@c6f2f878e7b0f86033214b85547d579be43351e3",
+          "identifiers": {
+            "purl": "pkg:github/espressif/esp-lwip@c6f2f878e7b0f86033214b85547d579be43351e3",
+            "cpe23": "cpe:2.3:a:lwip_project:lwip:2.2.0:*:*:*:*:*:*:*"
+          }
+        },
+        {
+          "@id": "cpe:2.3:a:lwip:lwip:2.2.0:*:*:*:*:*:*:*",
+          "identifiers": {
+            "cpe23": "cpe:2.3:a:lwip:lwip:2.2.0:*:*:*:*:*:*:*"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The lwIP mDNS responder (src/apps/mdns) is not in the image: the release ELF has no mdns_resp_ symbols. The firmware uses Espressif's separate espressif/mdns component."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-29036",
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-29036"
+      },
+      "products": [
+        {
+          "@id": "pkg:github/DaveGamble/cJSON@1.7.19",
+          "identifiers": {
+            "purl": "pkg:github/DaveGamble/cJSON@1.7.19",
+            "cpe23": "cpe:2.3:a:davegamble:cjson:1.7.19:*:*:*:*:*:*:*"
+          }
+        },
+        {
+          "@id": "cpe:2.3:a:cjson_project:cjson:1.7.19:*:*:*:*:*:*:*",
+          "identifiers": {
+            "cpe23": "cpe:2.3:a:cjson_project:cjson:1.7.19:*:*:*:*:*:*:*"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "cJSONUtils_ApplyPatches and cJSONUtils_ApplyPatchesCaseSensitive (cJSON_Utils.c) are not linked: the release ELF has no cJSONUtils_ symbols."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-87933",
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-87933"
+      },
+      "products": [
+        {
+          "@id": "pkg:github/DaveGamble/cJSON@1.7.19",
+          "identifiers": {
+            "purl": "pkg:github/DaveGamble/cJSON@1.7.19",
+            "cpe23": "cpe:2.3:a:davegamble:cjson:1.7.19:*:*:*:*:*:*:*"
+          }
+        },
+        {
+          "@id": "cpe:2.3:a:cjson_project:cjson:1.7.19:*:*:*:*:*:*:*",
+          "identifiers": {
+            "cpe23": "cpe:2.3:a:cjson_project:cjson:1.7.19:*:*:*:*:*:*:*"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "cJSONUtils_MergePatch (cJSON_Utils.c) is not linked: the release ELF has no cJSONUtils_ symbols."
     }
   ]
 }

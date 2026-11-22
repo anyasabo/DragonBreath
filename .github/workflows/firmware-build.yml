@@ -57,7 +57,7 @@ jobs:
   host-tests:
     name: host-tests (${{ matrix.name }})
     runs-on: ubuntu-latest
-    container: ubuntu:26.10
+    container: ubuntu:26.10@sha256:1c2a84ae3f2a24aeb97cded5b41f0211b441662f1a188cbd2e139e7625f6f1d6
     strategy:
       fail-fast: false
       matrix:
@@ -69,20 +69,22 @@ jobs:
             cc: gcc-16
             cflags: -fsanitize=address,undefined -fno-sanitize-recover=all -g
           - name: clang-asan-ubsan
-            cc: clang
+            cc: clang-23
             cflags: -fsanitize=address,undefined -fno-sanitize-recover=all -g
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Install compilers
         # clang uses the newest GCC that has libstdc++ headers. Without
         # libstdc++-16-dev, it selects GCC 15 and -Werror stops the build
         # (-Wgcc-install-dir-libstdcxx). Fork-only: git is for the host tests that
-        # fetch dc_pid at a commit (tests/fetch_dc_pid.sh).
+        # fetch dc_pid at a commit (tests/fetch_dc_pid.sh). Fork-only: clang-23
+        # from apt.llvm.org, the clang of the devspace (tools/ci/install-llvm.sh).
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git gcc-16 libstdc++-16-dev clang libclang-rt-dev libc6-dev
+          apt-get install -y --no-install-recommends ca-certificates curl git gcc-16 libstdc++-16-dev libc6-dev
+          case "${{ matrix.cc }}" in clang-*) sh tools/ci/install-llvm.sh "${{ matrix.cc }}" | tail -1 ;; esac
           "${{ matrix.cc }}" --version
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run host tests
         env:
@@ -94,7 +96,7 @@ jobs:
   # coverage number fails the job.
   coverage:
     runs-on: ubuntu-latest
-    container: ubuntu:26.10
+    container: ubuntu:26.10@sha256:1c2a84ae3f2a24aeb97cded5b41f0211b441662f1a188cbd2e139e7625f6f1d6
     steps:
       - name: Install tools
         run: |
@@ -144,7 +146,7 @@ jobs:
   # (2.21 in Ubuntu 26.10); ubuntu-24.04 has 2.13.
   cppcheck:
     runs-on: ubuntu-latest
-    container: ubuntu:26.10
+    container: ubuntu:26.10@sha256:1c2a84ae3f2a24aeb97cded5b41f0211b441662f1a188cbd2e139e7625f6f1d6
     steps:
       - name: Install cppcheck
         run: |

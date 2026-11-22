@@ -21,19 +21,19 @@ jobs:
     # The same container as the host tests: a current clang, not the clang-18
     # of the ubuntu-latest runner.
     runs-on: ubuntu-latest
-    container: ubuntu:26.10
+    container: ubuntu:26.10@sha256:1c2a84ae3f2a24aeb97cded5b41f0211b441662f1a188cbd2e139e7625f6f1d6
     steps:
-      # libFuzzer and the sanitizer runtimes are in libclang-rt-dev. With
-      # --no-install-recommends, apt does not install it with clang. clang
-      # needs the libstdc++ headers of the newest GCC (see firmware-build.yml).
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # clang-23 with libFuzzer and the sanitizer runtimes, from apt.llvm.org, as in
+      # the devspace. run_fuzz.sh selects clang-23. clang needs the libstdc++
+      # headers of the newest GCC (see firmware-build.yml).
       - name: Install clang
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates clang libclang-rt-dev gcc-16 libstdc++-16-dev libc6-dev
-          clang --version
-
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          apt-get install -y --no-install-recommends gcc-16 libstdc++-16-dev libc6-dev
+          sh tools/ci/install-llvm.sh 23
 
       - name: Fuzz the HTTP handlers
         run: tests/run_fuzz.sh 120

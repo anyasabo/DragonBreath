@@ -10,38 +10,70 @@
     {
       "customType": "regex",
       "description": "The ESP-IDF version of the release and CI builds",
-      "managerFilePatterns": ["/^\\.idf-version$/"],
-      "matchStrings": ["^(?<currentValue>v\\d+\\.\\d+(?:\\.\\d+)?)\\s*$"],
+      "managerFilePatterns": [
+        "/^\\.idf-version$/"
+      ],
+      "matchStrings": [
+        "^(?<currentValue>v\\d+\\.\\d+(?:\\.\\d+)?)\\s*$"
+      ],
       "depNameTemplate": "espressif/esp-idf",
       "datasourceTemplate": "github-releases"
     },
     {
       "customType": "regex",
       "description": "The ESP-IDF version of the compatibility job",
-      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
-      "matchStrings": ["esp_idf_version: (?<currentValue>v\\d+\\.\\d+(?:\\.\\d+)?)\\n"],
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "esp_idf_version: (?<currentValue>v\\d+\\.\\d+(?:\\.\\d+)?)\\n"
+      ],
       "depNameTemplate": "espressif/esp-idf",
       "datasourceTemplate": "github-releases"
     },
     {
       "customType": "regex",
       "description": "Python tools pinned in the workflows",
-      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
-      "matchStrings": ["(?<depName>esp-idf-sbom|gcovr)==(?<currentValue>[0-9][0-9.]*)"],
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "(?<depName>esp-idf-sbom|gcovr)==(?<currentValue>[0-9][0-9.]*)"
+      ],
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "customType": "regex",
+      "description": "The esp-idf-sbom version of tools/sbom/sbom.sh",
+      "managerFilePatterns": [
+        "/^tools/sbom/sbom\\.sh$/"
+      ],
+      "matchStrings": [
+        "ESP_IDF_SBOM_VERSION=(?<currentValue>[0-9][0-9.]*)"
+      ],
+      "depNameTemplate": "esp-idf-sbom",
       "datasourceTemplate": "pypi"
     }
   ],
   "packageRules": [
     {
       "description": "The compatibility job checks the oldest supported ESP-IDF line: patch updates only",
-      "matchDepNames": ["espressif/esp-idf"],
-      "matchFileNames": [".github/workflows/**"],
+      "matchDepNames": [
+        "espressif/esp-idf"
+      ],
+      "matchFileNames": [
+        ".github/workflows/**"
+      ],
       "allowedVersions": "<5.4"
     },
     {
       "description": "Group the GitHub Actions",
-      "matchManagers": ["github-actions"],
-      "matchDepTypes": ["action"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepTypes": [
+        "action"
+      ],
       "groupName": "GitHub Actions"
     }
   ]

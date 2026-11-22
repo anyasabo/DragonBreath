@@ -11,6 +11,8 @@ on:
       - 'CMakeLists.txt'
       - 'partitions.csv'
       - 'sdkconfig.defaults'
+      - 'sdkconfig.release'
+      - 'dependencies.lock'
       - 'sdkconfig.hil-*'
       - 'sdkconfig.debug-*'
       - 'tools/*.py'
@@ -18,6 +20,8 @@ on:
       - '.idf-version'
       - 'tools/elf_check*'
       - 'tools/cppcheck-defs.h'
+      - 'tools/sbom/**'
+      - 'tools/ci/**'
       - '.github/workflows/firmware-build.yml'
   pull_request:
     paths:
@@ -27,6 +31,8 @@ on:
       - 'CMakeLists.txt'
       - 'partitions.csv'
       - 'sdkconfig.defaults'
+      - 'sdkconfig.release'
+      - 'dependencies.lock'
       - 'sdkconfig.hil-*'
       - 'sdkconfig.debug-*'
       - 'tools/*.py'
@@ -34,7 +40,12 @@ on:
       - '.idf-version'
       - 'tools/elf_check*'
       - 'tools/cppcheck-defs.h'
+      - 'tools/sbom/**'
+      - 'tools/ci/**'
   workflow_dispatch:
+  # Weekly: new CVEs appear with no change to the code (the SBOM scans).
+  schedule:
+    - cron: "23 4 * * 1"
 
 # Least-privilege GITHUB_TOKEN: the build only needs to read code and upload
 # artifacts (upload-artifact uses the Actions API, not `contents`).
@@ -230,6 +241,9 @@ jobs:
       - name: Check script dependencies (PEP 723)
         run: python3 -m unittest tests/test_script_deps.py
 
+      - name: Test the license check of the SBOM tools
+        run: python3 -m unittest tests/test_license_check.py
+
       - name: Test flash.py helpers
         run: python3 -m unittest tests/test_flash_tool.py
 
@@ -254,51 +268,34 @@ jobs:
             -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
           command: ccache --zero-stats && idf.py build
 
-      # SBOM: esp-idf-sbom reads build/project_description.json. That file has the
-      # container paths, so the create step runs in the ESP-IDF container. The
-      # vulnerability check needs only the SPDX file. It reports and does not fail.
-      - name: Create SBOM (SPDX)
+      # SBOM, license check and vulnerability scans: tools/sbom/sbom.sh, the same script as
+      # local runs. "create" reads build/project_description.json, which has the container
+      # paths, so it runs in the ESP-IDF container. A license failure fails the build.
+      # A CVE does not: the scans only report, in the job summary.
+      - name: Create SBOM and check licenses
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
           esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32c3
           path: '.'
-          command: |
-            set -e
-            pip install --quiet esp-idf-sbom==1.5.0
-            esp-idf-sbom create --rem-unused -o build/dragonbreath.spdx build/project_description.json
+          command: sh tools/sbom/sbom.sh create build build/sbom
 
-      - name: Check SBOM for vulnerabilities (report only)
+      - name: Scan SBOM for vulnerabilities (report only)
         continue-on-error: true
         timeout-minutes: 20
-        env:
-          NVDAPIKEY: ${{ secrets.NVDAPIKEY }}
         run: |
-          # check exits 1 if it finds a CVE. Keep the code for the summary.
-          rc=0
-          pipx run esp-idf-sbom==1.5.0 --no-color --no-progress --no-hint \
-            check --format markdown -o build/sbom-check.md build/dragonbreath.spdx || rc=$?
-          {
-            echo '## SBOM vulnerability check (report only)'
-            echo
-            echo "esp-idf-sbom check exit code: $rc"
-            echo
-            echo '| status | severity | package | version | CVE |'
-            echo '|---|---|---|---|---|'
-            sed 's/  */ /g' build/sbom-check.md | awk -F'|' '$5 ~ /CVE-/ {
-              for (i = 2; i <= 7; i++) gsub(/^ +| +$/, "", $i)
-              printf "| %s | %s | %s | %s | %s |\n", $2, ($7 == "" ? "-" : $7), $3, $4, $5
-            }'
-          } >> "$GITHUB_STEP_SUMMARY"
+          sudo sh tools/ci/install-scanners.sh
+          sudo chown -R "$(id -u)" build/sbom
+          sh tools/sbom/sbom.sh scan build/sbom
+          cat build/sbom/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload SBOM
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dragonbreath-sbom
           path: |
-            build/dragonbreath.spdx
-            build/sbom-check.md
-          if-no-files-found: warn
+            build/sbom/*
+            !build/sbom/.venv
 
       - name: Check API v2 contract and shared dashboard ownership
         run: |

@@ -17,6 +17,7 @@ on:
       - 'tools/idf-build.sh'
       - '.idf-version'
       - 'tools/elf_check*'
+      - 'tools/cppcheck-defs.h'
       - '.github/workflows/firmware-build.yml'
   pull_request:
     paths:
@@ -32,6 +33,7 @@ on:
       - 'tools/idf-build.sh'
       - '.idf-version'
       - 'tools/elf_check*'
+      - 'tools/cppcheck-defs.h'
   workflow_dispatch:
 
 # Least-privilege GITHUB_TOKEN: the build only needs to read code and upload
@@ -132,10 +134,44 @@ jobs:
           name: host-test-coverage
           path: coverage-html/
 
+  # E1 static analysis: cppcheck over OUR OWN code (components/ + main/). Fails on
+  # any error/warning/performance/portability finding (--error-exitcode). The C
+  # `error` checks are always on. tools/cppcheck-defs.h removes the GNU asm labels
+  # on the extern binary-blob symbols, which cppcheck cannot parse. Other false
+  # positives are suppressed inline at the site with a justification; the
+  # missing-ESP-IDF-headers noise and the normal-check-level branch-limit note are
+  # suppressed globally (informational). The container gives a current Cppcheck
+  # (2.21 in Ubuntu 26.10); ubuntu-24.04 has 2.13.
+  cppcheck:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.10
+    steps:
+      - name: Install cppcheck
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends cppcheck
+          cppcheck --version
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Static analysis (cppcheck)
+        run: |
+          INCS=""
+          for d in components/*/include; do INCS="$INCS -I$d"; done
+          cppcheck \
+            --include=tools/cppcheck-defs.h \
+            --enable=warning,performance,portability \
+            --inline-suppr \
+            --suppress=missingInclude \
+            --suppress=missingIncludeSystem \
+            --suppress=normalCheckLevelMaxBranches \
+            --error-exitcode=2 \
+            --std=c11 \
+            $INCS \
+            components/ main/
+
   build:
     needs: [host-tests]
-    # Keep Cppcheck on the verified Ubuntu 24.04 toolchain. Ubuntu 26.04
-    # ships Cppcheck 2.19, which rejects the portal GNU asm symbol aliases.
     runs-on: ubuntu-24.04
     steps:
       # SHA-pinned (supply-chain); trailing comment tracks the human version.
@@ -194,30 +230,6 @@ jobs:
 
       - name: Test flash.py helpers
         run: python3 -m unittest tests/test_flash_tool.py
-
-      # E1 static analysis: cppcheck over OUR OWN code (components/ + main/). Fails on
-      # any error/warning/performance/portability finding (--error-exitcode). The C
-      # `error` checks are always on. False positives cppcheck's parser cannot model
-      # (e.g. GNU asm() labels on extern binary-blob symbols) are suppressed inline
-      # at the site with a justification; the missing-ESP-IDF-headers noise and the
-      # normal-check-level branch-limit note are suppressed globally (informational).
-      - name: Static analysis (cppcheck)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cppcheck
-          cppcheck --version
-          INCS=""
-          for d in components/*/include; do INCS="$INCS -I$d"; done
-          cppcheck \
-            --enable=warning,performance,portability \
-            --inline-suppr \
-            --suppress=missingInclude \
-            --suppress=missingIncludeSystem \
-            --suppress=normalCheckLevelMaxBranches \
-            --error-exitcode=2 \
-            --std=c11 \
-            $INCS \
-            components/ main/
 
       # E1 warnings-as-errors: enforced inside the build itself — the top-level
       # CMakeLists applies `-Wall -Wextra -Werror` PRIVATE to every first-party pb_*

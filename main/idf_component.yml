@@ -1,5 +1,5 @@
 # Fork-only: every dragon-core component comes from the anyasabo/dragon-core fork,
-# branch anya, pinned to one commit. dependencies.lock in git records the exact versions.
+# branch fork, pinned to one commit. dependencies.lock in git records the exact versions.
 dependencies:
   dc_prusa:
     git: https://github.com/anyasabo/dragon-core.git

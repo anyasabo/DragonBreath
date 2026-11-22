@@ -4,6 +4,7 @@
 # CALLEE "(indirect)" is a call through a function pointer: the check cannot
 # see its target, so each new indirect site needs a review.
 # Generated from the release ELF (ESP-IDF v5.3.6) with --write-allowlist.
+# ESP-IDF v6 log macros call esp_log, not esp_log_write: the call sites are the same.
 #
 # Before you add a line or raise a count, read the call. Accept it only if one
 # of these is true:
@@ -106,33 +107,33 @@ set_power_on xQueueGenericSend 3  # lock
 set_power_on xQueueSemaphoreTake 1  # lock
 stop_heat xQueueGenericSend 1  # lock
 stop_heat xQueueSemaphoreTake 1  # lock
-adc_cali_raw_to_voltage esp_log_write 2  # log
-adc_lock_release esp_log_write 1  # log
-adc_oneshot_read esp_log_write 1  # log
+adc_cali_raw_to_voltage esp_log 3  # log
+adc_lock_release esp_log 1  # log
+adc_oneshot_read esp_log 1  # log
 add_entry esp_rom_printf 2  # log
-control_task esp_log_write 1  # log
-db_klipper_mqtt_tick esp_log_write 2  # log
-do_latch esp_log_write 1  # log
-esp_mqtt_client_publish esp_log_write 2  # log
-esp_mqtt_write esp_log_write 2  # log
-esp_task_wdt_add esp_log_write 1  # log
-esp_task_wdt_reset esp_log_write 1  # log
+control_task esp_log 1  # log
+db_klipper_mqtt_tick esp_log 2  # log
+do_latch esp_log 1  # log
+esp_mqtt_client_publish esp_log 2  # log
+esp_mqtt_write esp_log 2  # log
+esp_task_wdt_add esp_log 1  # log
+esp_task_wdt_reset esp_log 1  # log
 esp_task_wdt_reset esp_rom_printf 1  # log
-fh_abort esp_log_write 1  # log
-fh_after_drive esp_log_write 1  # log
-fh_restart esp_log_write 1  # log
-fh_store esp_log_write 1  # log
-gpio_set_level esp_log_write 1  # log
-mqtt_client_enqueue_publish esp_log_write 1  # log
-outbox_enqueue esp_log_write 2  # log
-pb_heater_emergency_off esp_log_write 1  # log
-pb_heater_inhibit esp_log_write 1  # log
-pb_heater_set_target_c esp_log_write 3  # log
-pb_heater_tick esp_log_write 3  # log
-pb_policy_tick esp_log_write 1  # log
-persist_fault esp_log_write 1  # log
-stop_heat esp_log_write 1  # log
-trip esp_log_write 1  # log
+fh_abort esp_log 1  # log
+fh_after_drive esp_log 1  # log
+fh_restart esp_log 1  # log
+fh_store esp_log 1  # log
+gpio_set_level esp_log 1  # log
+mqtt_client_enqueue_publish esp_log 1  # log
+outbox_enqueue esp_log 2  # log
+pb_heater_emergency_off esp_log 1  # log
+pb_heater_inhibit esp_log 1  # log
+pb_heater_set_target_c esp_log 3  # log
+pb_heater_tick esp_log 3  # log
+pb_policy_tick esp_log 1  # log
+persist_fault esp_log 1  # log
+stop_heat esp_log 1  # log
+trip esp_log 1  # log
 add_entry calloc 1  # malloc
 cfree heap_caps_free 1  # malloc
 esp_event_post_to calloc 1  # malloc
@@ -143,3 +144,11 @@ dc_evlog_add vsnprintf 1  # printf
 publish_state snprintf 4  # printf
 publish_telemetry snprintf 6  # printf
 set_power_on snprintf 1  # printf
+# ESP-IDF v6.1.1 (2026-11-22). All are fault paths:
+# - adc_cali_raw_to_voltage has a third argument check (ESP_RETURN_ON_FALSE).
+# - esp_clk_tree_enable_src warns if a clock source is disabled twice.
+# - esp_error_check_failed_print runs in ESP_ERROR_CHECK just before abort(),
+#   like __assert_func.
+esp_clk_tree_enable_src esp_rom_printf 1  # log
+esp_error_check_failed_print esp_rom_printf 4  # log
+esp_error_check_failed_print spi_flash_cache_enabled 1  # blocking

@@ -155,6 +155,16 @@ dependencies:
       path: components/dc_wifi
       type: git
     version: 2dd92a36bfc0a4fcdf141a18969180f13e727ff7
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.7.19~2
   espressif/esp_websocket_client:
     component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
     dependencies:
@@ -175,10 +185,20 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.15.1
+  espressif/mqtt:
+    component_hash: fb18bc3b65aa8c94693a9811ffc322cca8a65d92d5ec84983d3e385080e3969c
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.0
   idf:
     source:
       type: idf
-    version: 5.3.6
+    version: 6.1.1
 direct_dependencies:
 - dc_bambu
 - dc_evlog
@@ -193,6 +213,7 @@ direct_dependencies:
 - dc_time
 - dc_ui
 - dc_wifi
+- espressif/cjson
 manifest_hash: 48af1179640c0edb0084994c5a23350e28f78e2efa96cf0f698d80195fc78acf
 target: esp32c3
-version: 2.0.0
+version: 3.0.0

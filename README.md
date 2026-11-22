@@ -1,5 +1,10 @@
 # DragonBreath
 
+> **This is the fork [anyasabo/DragonBreath](https://github.com/anyasabo/DragonBreath).** It adds safety
+> fixes, security fixes, metrics, syslog and tests to [plastikman/DragonBreath](https://github.com/plastikman/DragonBreath).
+> A release build of the fork needs a control token, and it has a fail-closed first-heat check.
+> Read [`docs/FORK.md`](docs/FORK.md) for the differences, their upstream status and the install steps.
+
 Open firmware for the **BIGTREETECH Panda Breath** chamber heater (ESP32-C3),
 providing local web control and a selectable control source — **Klipper/Moonraker**
 (default), **Home Assistant** (MQTT Discovery), **Bambu LAN**, or **Prusa (PrusaLink)**.

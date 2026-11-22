@@ -45,8 +45,8 @@ class ScriptCommand(unittest.TestCase):
 
 
 
-class ChunkedRead(unittest.TestCase):
-    """read_flash_chunked() with a fake esptool that drops some reads."""
+class FakeEsptool:
+    """A fake esptool run() that serves a flash image and drops some reads."""
 
     SIZE = 0x80000      # 512 KB fake flash: 4 chunks of 128 KB
     CHUNK = 0x20000
@@ -57,11 +57,20 @@ class ChunkedRead(unittest.TestCase):
         self.image = random.Random(1).randbytes(self.SIZE)
         self.calls = []
         self.fail = {}          # offset -> number of reads of that chunk that fail
+        self.fail_full = {}     # offset -> failures that still write a full file
+        self.verify_rc = 0
 
     def fake_run(self, cmd):
         self.calls.append(cmd)
+        if "verify-flash" in cmd:
+            return self.verify_rc
         args = cmd[cmd.index("read-flash") + 1:]
         offset, length, out = int(args[0], 16), int(args[1], 16), args[2]
+        if self.fail_full.get(offset, 0) > 0:
+            self.fail_full[offset] -= 1
+            with open(out, "wb") as f:      # full size, but rc says failure
+                f.write(b"\xee" * length)
+            return 2
         if self.fail.get(offset, 0) > 0:
             self.fail[offset] -= 1
             with open(out, "wb") as f:      # esptool can leave a part
@@ -70,6 +79,11 @@ class ChunkedRead(unittest.TestCase):
         with open(out, "wb") as f:
             f.write(self.image[offset:offset + length])
         return 0
+
+
+
+class ChunkedRead(FakeEsptool, unittest.TestCase):
+    """read_flash_chunked() with a fake esptool that drops some reads."""
 
     def read(self, bauds=(460800, 230400, 115200)):
         path = os.path.join(self.tmp.name, "backup.bin")
@@ -103,6 +117,17 @@ class ChunkedRead(unittest.TestCase):
         self.assertEqual(Path(path).read_bytes(), self.image)
         self.assertIn("230400", self.calls[-2])     # chunk 3 at the next rate
 
+    def test_nonzero_rc_is_a_failure_even_with_a_full_file(self):
+        self.fail_full = {0x20000: 1}
+        ok, path = self.read()
+        self.assertTrue(ok)
+        self.assertEqual(Path(path).read_bytes(), self.image)
+
+    def test_returns_lowest_baud_used(self):
+        self.fail = {0x40000: flash.CHUNK_TRIES_PER_BAUD}
+        baud, _ = self.read()
+        self.assertEqual(baud, 230400)
+
     def test_gives_up_and_removes_the_file(self):
         self.fail = {0x20000: 999}
         ok, path = self.read()
@@ -110,7 +135,7 @@ class ChunkedRead(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         self.assertFalse(os.path.exists(path + ".part"))
 
-    def test_short_chunk_is_a_failure(self):
+    def test_short_chunk_is_read_again(self):
         real = self.fake_run
         done = []
 
@@ -129,6 +154,49 @@ class ChunkedRead(unittest.TestCase):
                                           size=self.SIZE, chunk=self.CHUNK)
         self.assertTrue(ok)
         self.assertEqual(Path(path).read_bytes(), self.image)
+
+
+class Backup(FakeEsptool, unittest.TestCase):
+    """do_backup(): the final name appears only after the chip verify."""
+
+    def backup(self):
+        image = self.image
+        with mock.patch.object(flash, "run", self.fake_run), \
+                mock.patch.object(flash, "FLASH_SIZE", self.SIZE), \
+                mock.patch.object(flash, "READ_CHUNK", self.CHUNK):
+            self.image = b"\xe9" + image[1:]
+            return flash.do_backup(None, [460800, 230400, 115200], self.tmp.name)
+
+    def test_success(self):
+        path, baud = self.backup()
+        self.assertEqual(Path(path).read_bytes(), self.image)
+        self.assertEqual(os.listdir(self.tmp.name), [os.path.basename(path)])
+        self.assertEqual(baud, 460800)
+
+    def test_failed_verify_leaves_no_backup(self):
+        self.verify_rc = 2
+        path, _ = self.backup()
+        self.assertIsNone(path)
+        self.assertEqual(os.listdir(self.tmp.name), [])
+
+    def test_ctrl_c_leaves_no_file(self):
+        real = self.fake_run
+
+        def interrupt_at_chunk_3(cmd):
+            if "read-flash" in cmd and cmd[cmd.index("read-flash") + 1] == hex(2 * self.CHUNK):
+                raise KeyboardInterrupt
+            return real(cmd)
+
+        self.fake_run = interrupt_at_chunk_3
+        with self.assertRaises(KeyboardInterrupt):
+            self.backup()
+        self.assertEqual(os.listdir(self.tmp.name), [])
+
+    def test_baud_for_the_flash_is_the_read_baud(self):
+        self.fail = {0x20000: flash.CHUNK_TRIES_PER_BAUD * 2}
+        path, baud = self.backup()
+        self.assertIsNotNone(path)
+        self.assertEqual(baud, 115200)
 
 if __name__ == "__main__":
     unittest.main()

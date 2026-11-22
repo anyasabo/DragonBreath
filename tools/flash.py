@@ -112,28 +112,33 @@ READ_CHUNK = 0x20000          # 128 KB: 32 frames
 CHUNK_TRIES_PER_BAUD = 3
 
 
-def read_flash_chunked(port, bauds, path, size=FLASH_SIZE, chunk=READ_CHUNK):
+def read_flash_chunked(port, bauds, path, size=None, chunk=None):
     """Read `size` bytes of flash into `path`, `chunk` bytes at a time.
 
     Each chunk gets CHUNK_TRIES_PER_BAUD tries at each rate of `bauds`. A
     chunk that fails at all rates stops the read and removes `path`.
-    Returns True on success."""
+    Returns the lowest baud rate that a chunk needed, or None on failure."""
+    size = FLASH_SIZE if size is None else size
+    chunk = READ_CHUNK if chunk is None else chunk
     part = path + ".part"
     total = size // chunk
-    ok = False
+    slowest = None
+    done = False
     try:
         with open(path, "wb") as out:
             for n, offset in enumerate(range(0, size, chunk), start=1):
-                if not read_one_chunk(port, bauds, offset, chunk, part, n, total):
-                    return False
+                baud = read_one_chunk(port, bauds, offset, chunk, part, n, total)
+                if baud is None:
+                    return None
+                slowest = baud if slowest is None else min(slowest, baud)
                 with open(part, "rb") as f:
                     out.write(f.read())
-        ok = True
-        return True
+        done = True
+        return slowest
     finally:
         if os.path.exists(part):
             os.remove(part)
-        if not ok and os.path.exists(path):
+        if not done and os.path.exists(path):
             os.remove(path)
 
 
@@ -148,9 +153,9 @@ def read_one_chunk(port, bauds, offset, length, part, n, total):
             rc = run(esptool_cmd(port, b, "--after", "no-reset",
                                  "read-flash", hex(offset), hex(length), part))
             if rc == 0 and os.path.exists(part) and os.path.getsize(part) == length:
-                return True
+                return b
     print(f"ERROR: chunk {n}/{total} at {offset:#08x} failed at all baud rates.")
-    return False
+    return None
 
 
 ESPTOOL_MAJOR = 5   # the command names below are the esptool 5 names
@@ -222,36 +227,50 @@ def sha256_file(path):
 
 
 def do_backup(port, bauds, backup_dir):
-    """Returns (path, used_baud) on success, or (None, None) on failure."""
+    """Returns (path, used_baud) on success, or (None, None) on failure.
+
+    The read goes to `<name>.unverified`. Only a file that passes all checks,
+    including the on-chip hash, gets its final name `stock-<stamp>.bin`. Thus
+    a failed or interrupted backup never looks like a good one."""
     os.makedirs(backup_dir, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     path = os.path.join(backup_dir, f"stock-{stamp}.bin")
+    tmp = path + ".unverified"
     print(f"\n[1/3] Backing up the full {FLASH_SIZE // (1024*1024)} MB flash -> {path}")
     print(f"      (this reads the WHOLE chip in {READ_CHUNK // 1024} KB chunks; "
           "a few minutes. Do not unplug.)")
-    if not read_flash_chunked(port, bauds, path):
-        print("ERROR: backup read failed at all baud rates — NOT flashing. Fix the "
-              "connection (cable/port) and retry.")
-        return None, None
+    try:
+        baud = read_flash_chunked(port, bauds, tmp)
+        if baud is None:
+            print("ERROR: backup read failed at all baud rates — NOT flashing. Fix the "
+                  "connection (cable/port) and retry.")
+            return None, None
 
-    # 1) exact size, 2) not a blank/failed read (real image starts with the ESP
-    # magic byte 0xE9), 3) contents actually match the chip (on-device hash via
-    # esptool verify-flash, not just the file size).
-    size = os.path.getsize(path) if os.path.exists(path) else 0
-    if size != FLASH_SIZE:
-        print(f"ERROR: backup is {size} bytes, expected exactly {FLASH_SIZE}. NOT flashing.")
-        return None, None
-    with open(path, "rb") as f:
-        magic = f.read(1)
-    if magic != b"\xe9":
-        print(f"ERROR: backup does not start with the ESP image magic (0xE9); got "
-              f"0x{magic.hex() or '??'}. The read looks blank/corrupt — NOT flashing.")
-        return None, None
-    print("      verifying backup against the chip (hash)...")
-    rc, baud = run_esptool(port, bauds, "verify-flash", "0x0", path)
-    if rc != 0:
-        print("ERROR: backup failed hash verification against the chip — NOT flashing.")
-        return None, None
+        # 1) exact size, 2) not a blank/failed read (real image starts with the ESP
+        # magic byte 0xE9), 3) contents actually match the chip (on-device hash via
+        # esptool verify-flash, not just the file size).
+        size = os.path.getsize(tmp)
+        if size != FLASH_SIZE:
+            print(f"ERROR: backup is {size} bytes, expected exactly {FLASH_SIZE}. NOT flashing.")
+            return None, None
+        with open(tmp, "rb") as f:
+            magic = f.read(1)
+        if magic != b"\xe9":
+            print(f"ERROR: backup does not start with the ESP image magic (0xE9); got "
+                  f"0x{magic.hex() or '??'}. The read looks blank/corrupt — NOT flashing.")
+            return None, None
+        print("      verifying backup against the chip (hash)...")
+        # Start the verify at the rate that the read needed. The flash step
+        # after the backup uses the rate that this function returns.
+        ladder = [b for b in bauds if b <= baud]
+        rc, _ = run_esptool(port, ladder, "verify-flash", "0x0", tmp)
+        if rc != 0:
+            print("ERROR: backup failed hash verification against the chip — NOT flashing.")
+            return None, None
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
     digest = sha256_file(path)
     print(f"      backup OK: {size} bytes, verified.")
@@ -399,8 +418,8 @@ def main():
         path, used_baud = do_backup(args.port, bauds, args.backup_dir)
         if path is None:
             return 1
-        # The backup found a baud the link handles for a full 4 MB transfer; start
-        # the flash there (and below) so we don't re-hit a known-bad higher rate.
+        # The backup returns the slowest rate that a chunk of its read needed.
+        # Start the flash there (and below) so we don't re-hit a bad higher rate.
         bauds = [b for b in bauds if b <= used_baud] or [used_baud]
         print(f"\n*** IMPORTANT: keep {path} safe — it is the ONLY way back to")
         print("*** stock. Copy it off this machine (cloud/USB) before continuing. ***")

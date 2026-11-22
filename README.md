@@ -47,7 +47,7 @@ is still sitting there to go back to.
 > slot with the previous DragonBreath version. A USB backup is the durable,
 > always-available way home. Take one and copy it somewhere safe before you start:
 > ```bash
-> python3 tools/flash.py --backup-only        # verified full stock backup, no flashing
+> uv run tools/flash.py --backup-only        # verified full stock backup, no flashing
 > ```
 > This talks to the board over the on-board CH340K USB-C bridge (native USB is
 > unavailable — GPIO18 is the SSR).
@@ -98,11 +98,13 @@ heater is on).
 **USB is recovery-only.** `tools/flash.py` remains for taking a full stock backup
 (`--backup-only`), restoring one, or unbricking a board that won't boot:
 ```bash
-python3 tools/flash.py --backup-only                                 # save a stock backup
-python3 tools/flash.py --restore backups/stock-YYYYmmdd-HHMMSS.bin    # full USB restore
+uv run tools/flash.py --backup-only                                 # save a stock backup
+uv run tools/flash.py --restore backups/stock-YYYYmmdd-HHMMSS.bin    # full USB restore
 ```
-**On Windows, use the `py` launcher, not `python`** (`py -m pip install esptool`, then
-`py tools\flash.py …`) — see [`docs/WINDOWS_RECOVERY.md`](docs/WINDOWS_RECOVERY.md).
+[uv](https://docs.astral.sh/uv/) reads the dependencies at the top of `flash.py`
+(PEP 723) and installs esptool 5 for the run. Without uv:
+`python3 -m pip install "esptool>=5,<6"`, then `python3 tools/flash.py …`.
+Windows: see [`docs/WINDOWS_RECOVERY.md`](docs/WINDOWS_RECOVERY.md).
 
 ### Locked out? Hard-reset from the front panel — no computer needed
 

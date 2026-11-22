@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["esptool>=5,<6"]
+# ///
 """DragonBreath installer/flasher for the BIGTREETECH Panda Breath (ESP32-C3).
 
 *** READ THIS FIRST ***
@@ -13,22 +17,24 @@ then flashes the DragonBreath build. The backup is a full 4 MB image, so you can
 return to stock:
 
     # First-time install (back up stock, then flash DragonBreath):
-    python3 tools/flash.py
+    uv run tools/flash.py
 
     # Restore a previous backup (e.g. go back to stock):
-    python3 tools/flash.py --restore backups/stock-YYYYmmdd-HHMMSS.bin
+    uv run tools/flash.py --restore backups/stock-YYYYmmdd-HHMMSS.bin
 
     # Reset config only (Wi-Fi/token/policy/calibration) — keep the firmware:
-    python3 tools/flash.py --erase-nvs
+    uv run tools/flash.py --erase-nvs
 
 The Panda Breath has no exposed native-USB (GPIO18 is the SSR), so flashing is
 over the on-board CH340K USB-C UART bridge. Plug the board's USB-C into your PC;
 esptool auto-detects the port (override with --port).
 
-Requires esptool (`pip install esptool`, or the copy bundled with ESP-IDF).
-On Windows use the `py` launcher, not `python`: `py -m pip install esptool` then
-`py flash.py ...` — other apps' python.exe on PATH (Inkscape/GIMP/…) can otherwise
-shadow the Python you installed esptool into. See docs/WINDOWS_RECOVERY.md.
+Requires esptool 5 (the "# /// script" block above, PEP 723). `uv run` reads
+that block and installs esptool for this script, on Linux, macOS and Windows:
+https://docs.astral.sh/uv/getting-started/installation/
+Without uv, install the same requirement into the Python that runs this script:
+`python3 -m pip install "esptool>=5,<6"`, then `python3 tools/flash.py ...`.
+The esptool 4 copy in ESP-IDF 5.x is too old: esptool 5 renamed the commands.
 Tested against a V1.0.1 board — verify your board revision first.
 """
 import argparse
@@ -78,7 +84,7 @@ BAUD_LADDER = [460800, 230400, 115200]
 
 def run_esptool(port, bauds, *args):
     """Run one esptool operation, dropping to a slower baud on failure. esptool
-    read_flash/write_flash re-run cleanly (they overwrite the whole target), so a
+    read-flash/write-flash re-run cleanly (they overwrite the whole target), so a
     failed high-baud attempt is safe to retry slower. Returns (rc, used_baud)."""
     rc = 1
     for i, b in enumerate(bauds):
@@ -93,22 +99,31 @@ def run_esptool(port, bauds, *args):
     return rc, bauds[-1]
 
 
+ESPTOOL_MAJOR = 5   # the command names below are the esptool 5 names
+
+
 def check_esptool():
+    """Return True if this Python has esptool 5. Else print how to get it."""
     try:
-        subprocess.check_output([sys.executable, "-m", "esptool", "version"],
-                                stderr=subprocess.STDOUT)
+        out = subprocess.check_output([sys.executable, "-m", "esptool", "version"],
+                                      stderr=subprocess.STDOUT, text=True)
+        found = out.strip().splitlines()[-1].strip()
+        major = int(found.split(".")[0].lstrip("v"))
+    except (OSError, subprocess.CalledProcessError, ValueError, IndexError):
+        found, major = None, None
+    if major == ESPTOOL_MAJOR:
         return True
-    except Exception:
-        print(f"ERROR: esptool not found for THIS Python:\n         {sys.executable}")
-        print("       Install it into this exact interpreter:")
-        print(f'         "{sys.executable}" -m pip install esptool')
-        print("       On Windows, if that path is not your real Python (e.g. it points")
-        print("       at Inkscape/GIMP/etc.), use the 'py' launcher for BOTH steps so")
-        print("       pip and this script share one interpreter:")
-        print("         py -m pip install esptool")
-        print("         py flash.py ...")
-        print("       (or run from an ESP-IDF environment: . ~/esp/esp-idf/export.sh)")
-        return False
+    if found is None:
+        print(f"ERROR: esptool not found for this Python:\n         {sys.executable}")
+    else:
+        print(f"ERROR: esptool {found} found, but this tool needs esptool "
+              f"{ESPTOOL_MAJOR} (the command names changed in esptool 5).")
+    print("       Run the tool with uv. uv reads the dependencies at the top of")
+    print("       this file and installs esptool for this run:")
+    print("         uv run tools/flash.py ...")
+    print("       Or install the requirement into this exact interpreter:")
+    print(f'         "{sys.executable}" -m pip install "esptool>={ESPTOOL_MAJOR},<{ESPTOOL_MAJOR + 1}"')
+    return False
 
 
 def confirm(prompt):
@@ -134,7 +149,7 @@ def do_backup(port, bauds, backup_dir):
     path = os.path.join(backup_dir, f"stock-{stamp}.bin")
     print(f"\n[1/3] Backing up the full {FLASH_SIZE // (1024*1024)} MB flash -> {path}")
     print("      (this reads the WHOLE chip; ~1-2 min. Do not unplug.)")
-    rc, baud = run_esptool(port, bauds, "read_flash", "0", hex(FLASH_SIZE), path)
+    rc, baud = run_esptool(port, bauds, "read-flash", "0", hex(FLASH_SIZE), path)
     if rc != 0:
         print("ERROR: backup read failed at all baud rates — NOT flashing. Fix the "
               "connection (cable/port) and retry.")
@@ -142,7 +157,7 @@ def do_backup(port, bauds, backup_dir):
 
     # 1) exact size, 2) not a blank/failed read (real image starts with the ESP
     # magic byte 0xE9), 3) contents actually match the chip (on-device hash via
-    # esptool verify_flash, not just the file size).
+    # esptool verify-flash, not just the file size).
     size = os.path.getsize(path) if os.path.exists(path) else 0
     if size != FLASH_SIZE:
         print(f"ERROR: backup is {size} bytes, expected exactly {FLASH_SIZE}. NOT flashing.")
@@ -154,7 +169,7 @@ def do_backup(port, bauds, backup_dir):
               f"0x{magic.hex() or '??'}. The read looks blank/corrupt — NOT flashing.")
         return None, None
     print("      verifying backup against the chip (hash)...")
-    if run(esptool_cmd(port, baud, "verify_flash", "0x0", path)) != 0:
+    if run(esptool_cmd(port, baud, "verify-flash", "0x0", path)) != 0:
         print("ERROR: backup failed hash verification against the chip — NOT flashing.")
         return None, None
 
@@ -178,9 +193,9 @@ def do_flash(port, bauds, build_dir):
     print(f"\n[3/3] Flashing DragonBreath from {build_dir}")
     print(f"      app image SHA-256: {sha256_file(app)}")
     rc, _ = run_esptool(port, bauds,
-                        "--before", "default_reset", "--after", "hard_reset",
-                        "write_flash", "--flash_mode", "dio",
-                        "--flash_size", "4MB", "--flash_freq", "80m", *args)
+                        "--before", "default-reset", "--after", "hard-reset",
+                        "write-flash", "--flash-mode", "dio",
+                        "--flash-size", "4MB", "--flash-freq", "80m", *args)
     return rc
 
 
@@ -206,12 +221,12 @@ def do_restore(port, bauds, image):
         print("Aborted.")
         return 1
     rc, _ = run_esptool(port, bauds,
-                        "--before", "default_reset", "--after", "hard_reset",
-                        "write_flash", "--flash_size", "detect", "0x0", image)
+                        "--before", "default-reset", "--after", "hard-reset",
+                        "write-flash", "--flash-size", "detect", "0x0", image)
     if rc != 0:
         return rc
-    # write_flash already verifies the write inline ("Hash of data verified") before
-    # the reset. Do NOT run a second verify_flash here: --after hard_reset boots the
+    # write-flash already verifies the write inline ("Hash of data verified") before
+    # the reset. Do NOT run a second verify-flash here: --after hard-reset boots the
     # restored firmware, which immediately rewrites its own NVS and PHY/RF-calibration
     # regions, so a full-chip re-read no longer matches the file (guaranteed with an
     # nvs-scrubbed backup) and reports a *false* "digest mismatch."
@@ -233,7 +248,7 @@ def do_erase_nvs(port, bauds):
     if not confirm("Erase the config (NVS)?"):
         print("Aborted.")
         return 1
-    rc, _ = run_esptool(port, bauds, "erase_region", hex(NVS_OFFSET), hex(NVS_SIZE))
+    rc, _ = run_esptool(port, bauds, "erase-region", hex(NVS_OFFSET), hex(NVS_SIZE))
     if rc != 0:
         print("ERROR: NVS erase failed.")
         return rc
@@ -282,7 +297,7 @@ def main():
             return 1
         print(f"\nStock backup saved: {path}")
         print("Keep it safe — copy it off this machine (cloud/USB). Restore with:")
-        print(f"  python3 tools/flash.py --restore {path}")
+        print(f"  uv run tools/flash.py --restore {path}")
         return 0
 
     print("=" * 70)
@@ -321,7 +336,7 @@ def main():
         print("Wi-Fi it starts an 'DragonBreath_XXXX' AP — connect and open http://192.168.4.1")
     else:
         print("\nFlash FAILED. If the board is unresponsive, restore your backup:")
-        print("  python3 tools/flash.py --restore <backup.bin>")
+        print("  uv run tools/flash.py --restore <backup.bin>")
     return rc
 
 

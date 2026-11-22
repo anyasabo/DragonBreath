@@ -131,6 +131,12 @@ below into the GitHub Release notes.
 - The HTTP server waits at most 3 s (was the ESP-IDF default of 5 s) for each
   socket receive and send. The server has one task, so a slow or stalled LAN
   client now holds it for a shorter time.
+- **`tools/flash.py` and `tools/hil.py` declare their dependencies (PEP 723).**
+  `uv run tools/flash.py` installs esptool 5 for the run, with no `pip` step.
+  `flash.py` uses the esptool 5 command names (`read-flash`, `write-flash`, …)
+  and refuses esptool 4 with a message that tells you how to get esptool 5.
+  The docs and the Windows recovery guide use `uv run`. A CI test checks that
+  each script in `tools/` declares the packages that it imports.
 
 ### Fixed
 - **A hazard trip on top of a RAM-only latch did not go to NVS.** If the PTC or

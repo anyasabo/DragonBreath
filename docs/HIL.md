@@ -147,10 +147,14 @@ python -c 'import serial; print(serial.__version__)'
 
 ## Local operation
 
+`uv run` reads the dependencies at the top of `tools/hil.py` (PEP 723) and
+installs pyserial for the run. Run it in a shell with the ESP-IDF environment,
+because the tool starts `idf.py`.
+
 Run all scenarios compatible with a bridge-connected devboard:
 
 ```bash
-python tools/hil.py \
+uv run tools/hil.py \
   --target devboard \
   --port /dev/ttyUSB0 \
   --flash \
@@ -160,7 +164,7 @@ python tools/hil.py \
 Run one scenario without rebuilding or flashing:
 
 ```bash
-python tools/hil.py \
+uv run tools/hil.py \
   --target devboard \
   --port /dev/ttyUSB0 \
   --scenario tests/hil/scenarios/devboard-safety.json
@@ -169,7 +173,7 @@ python tools/hil.py \
 Use native USB explicitly:
 
 ```bash
-python tools/hil.py \
+uv run tools/hil.py \
   --target devboard \
   --transport native \
   --port /dev/ttyACM0 \
@@ -180,7 +184,7 @@ python tools/hil.py \
 Drive the console interactively by entering one JSON object per line:
 
 ```bash
-python tools/hil.py \
+uv run tools/hil.py \
   --target devboard \
   --port /dev/ttyUSB0 \
   --interactive
@@ -211,7 +215,7 @@ serial device is attached to another machine. The runner:
 For a bridge-connected board on a Linux device host:
 
 ```bash
-python tools/hil.py \
+uv run tools/hil.py \
   --host tester@hil-host \
   --target devboard \
   --port /dev/ttyUSB0 \
@@ -224,7 +228,7 @@ python tools/hil.py \
 To rerun the suite against the already-flashed firmware:
 
 ```bash
-python tools/hil.py \
+uv run tools/hil.py \
   --host tester@hil-host \
   --target devboard \
   --port /dev/ttyUSB0 \
@@ -249,7 +253,7 @@ used for a different machine.
 Run the non-heating smoke scenario against an already-flashed unit:
 
 ```bash
-python tools/hil.py \
+uv run tools/hil.py \
   --host tester@hil-host \
   --target panda \
   --port /dev/ttyUSB0 \
@@ -259,7 +263,7 @@ python tools/hil.py \
 Authorize a real-unit flash separately:
 
 ```bash
-python tools/hil.py \
+uv run tools/hil.py \
   --host tester@hil-host \
   --target panda \
   --port /dev/ttyUSB0 \

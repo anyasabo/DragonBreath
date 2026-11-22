@@ -73,11 +73,10 @@ jobs:
       - name: Install compilers
         # clang uses the newest GCC that has libstdc++ headers. Without
         # libstdc++-16-dev, it selects GCC 15 and -Werror stops the build
-        # (-Wgcc-install-dir-libstdcxx). git is for host tests that fetch a
-        # dependency at a commit.
+        # (-Wgcc-install-dir-libstdcxx).
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git gcc-16 libstdc++-16-dev clang libclang-rt-dev libc6-dev
+          apt-get install -y --no-install-recommends ca-certificates curl gcc-16 libstdc++-16-dev clang libclang-rt-dev libc6-dev
           "${{ matrix.cc }}" --version
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,7 +96,7 @@ jobs:
       - name: Install tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git gcc-16 libc6-dev pipx
+          apt-get install -y --no-install-recommends ca-certificates curl gcc-16 libc6-dev pipx
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

@@ -103,8 +103,29 @@ endif()
 # -Wno-error keeps all warnings as warnings, so a CI job can count them without a
 # failed build. The default build keeps -Werror.
 option(DB_EXTRA_WARNINGS "Add extra warnings (not errors) to first-party components" OFF)
+# The same set as the warnings audit of the Prusa firmware, which found real bugs
+# (for example an int8_t wrap with -Wconversion).
 set(DB_EXTRA_WARNING_FLAGS
-    -Wdouble-promotion -Wshadow -Wformat=2 -Wundef -Wstrict-prototypes)
+    -Wconversion -Wsign-conversion -Wdouble-promotion -Wcast-align=strict
+    -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op
+    -Wformat=2 -Wformat-overflow=2 -Wformat-truncation=2 -Wformat-signedness
+    -Wshadow -Wstack-usage=1024 -Wundef -Wstrict-prototypes -Wmissing-prototypes
+    -Wimplicit-fallthrough=5 -Wvla -Walloca -Wswitch-enum -Wpointer-arith
+    -Wwrite-strings -Wjump-misses-init)
+# Fork-only: these warnings are errors in each build. The analysis build of
+# 2026-11-22 (ESP-IDF v6.1, GCC 15.2) found zero of them in the first-party
+# and dc_* code, so a new one is a new defect.
+set(DB_STRICT_WARNING_FLAGS
+    -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op
+    -Wimplicit-fallthrough -Wvla -Walloca -Wpointer-arith -Wwrite-strings
+    -Wjump-misses-init -Wformat-overflow=2 -Wstrict-prototypes)
+# DB_ANALYZER=ON runs the GCC static analyzer (-fanalyzer) on the same
+# components only. CONFIG_COMPILER_STATIC_ANALYZER runs it on all of ESP-IDF,
+# and ESP-IDF code then stops the build.
+option(DB_ANALYZER "Run -fanalyzer on first-party components (warnings only)" OFF)
+if(DB_ANALYZER)
+    list(APPEND DB_EXTRA_WARNING_FLAGS -fanalyzer)
+endif()
 file(GLOB DB_OWN_COMPONENT_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/components/pb_*
     ${CMAKE_CURRENT_SOURCE_DIR}/components/db_*)
@@ -115,10 +136,18 @@ foreach(db_dir ${DB_OWN_COMPONENT_DIRS})
         list(APPEND DB_OWN_COMPONENTS ${db_comp})
     endif()
 endforeach()
+# Fork-only: the dragon-core components (dc_*) come from our fork of dragon-core
+# and run in the same image, so they get the same flags.
+idf_build_get_property(DB_BUILD_COMPONENTS BUILD_COMPONENTS)
+foreach(db_comp ${DB_BUILD_COMPONENTS})
+    if(db_comp MATCHES "^dc_")
+        list(APPEND DB_OWN_COMPONENTS ${db_comp})
+    endif()
+endforeach()
 set(DB_WERROR_APPLIED 0)
 foreach(db_comp ${DB_OWN_COMPONENTS})
     if(TARGET __idf_${db_comp})
-        target_compile_options(__idf_${db_comp} PRIVATE -Wall -Wextra -Werror)
+        target_compile_options(__idf_${db_comp} PRIVATE -Wall -Wextra -Werror ${DB_STRICT_WARNING_FLAGS})
         if(DB_EXTRA_WARNINGS)
             target_compile_options(__idf_${db_comp} PRIVATE ${DB_EXTRA_WARNING_FLAGS} -Wno-error)
         endif()

@@ -766,7 +766,7 @@ static esp_err_t km_config_get(httpd_req_t *req)
 static esp_err_t favicon_get(httpd_req_t *req)
 {
     // These linker labels bound one target_add_binary_data blob.
-    // cppcheck-suppress comparePointers
+    // cppcheck-suppress [comparePointers, subtractPointers]
     const size_t length = (size_t)(favicon_png_end - favicon_png_start);
     httpd_resp_set_type(req, "image/png");
     httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");

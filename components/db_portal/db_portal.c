@@ -784,10 +784,25 @@ static esp_err_t send_json_obj(httpd_req_t *req, cJSON *root)
     return err;
 }
 
+// A mutating route needs the PB_AUTH_HEADER check of pb_httpd, as the README
+// says for every mutating endpoint. On a reject, answer 403 and return ESP_FAIL:
+// httpd then closes the socket and does not read an unread request body.
+static bool portal_auth_reject(httpd_req_t *req)
+{
+    if (pb_httpd_auth_ok(req)) return false;
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req,
+        "{\"ok\":false,\"error\":\"auth_failed\","
+        "\"message\":\"missing/invalid " PB_AUTH_HEADER " header\"}");
+    return true;
+}
+
 // POST /api/v2/bambu/scan — start a one-shot LAN scan (user-initiated only). The
 // setup UI calls this when the operator opens/clicks Bambu setup, then polls GET.
 static esp_err_t bambu_scan_post(httpd_req_t *req)
 {
+    if (portal_auth_reject(req)) return ESP_FAIL;
     dc_bambu_scan_start();
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "scanning", dc_bambu_scanning());
@@ -851,6 +866,7 @@ static esp_err_t presets_get(httpd_req_t *req)
 // POST /api/v2/presets  body {"presets":[t0,t1,t2,t3]} — save + echo back (clamped).
 static esp_err_t presets_post(httpd_req_t *req)
 {
+    if (portal_auth_reject(req)) return ESP_FAIL;   // writes NVS
     int len = req->content_len;
     if (len <= 0 || len > 256) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body"); return ESP_FAIL; }
     char buf[257];

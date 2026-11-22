@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "pb_httpd.h"
+#include "pb_token.h"
 #include "pb_heater.h"
 #include "pb_ntc.h"
 #include "pb_leds.h"
@@ -66,7 +67,7 @@ bool pb_httpd_auth_ok(httpd_req_t *req)
     if (hlen == 0 || hlen >= sizeof hv) return false;
     if (httpd_req_get_hdr_value_str(req, PB_AUTH_HEADER, hv, sizeof hv) != ESP_OK) return false;
 
-    if (tok[0]) return strcmp(hv, tok) == 0;   // configured token -> exact match
+    if (tok[0]) return pb_token_equal(hv, tok);   // configured token -> exact match, constant time
     return hv[0] != '\0';                       // else presence-only CSRF gate
 }
 

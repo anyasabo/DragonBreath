@@ -52,6 +52,9 @@ jobs:
       - name: Test authoritative policy state machine
         run: sh tests/run_policy_host_test.sh
 
+      - name: Test the constant-time control-token compare
+        run: sh tests/run_token_host_test.sh
+
       - name: Test front-panel button state machine
         run: sh tests/run_buttons_host_test.sh
 

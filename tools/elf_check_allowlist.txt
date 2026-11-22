@@ -94,6 +94,8 @@ pb_policy_set_env xQueueGenericSend 1  # lock
 pb_policy_set_env xQueueSemaphoreTake 1  # lock
 pb_policy_set_klipper_helper xQueueGenericSend 1  # lock
 pb_policy_set_klipper_helper xQueueSemaphoreTake 1  # lock
+pb_policy_set_source_zone_available xQueueGenericSend 1  # lock
+pb_policy_set_source_zone_available xQueueSemaphoreTake 1  # lock
 pb_policy_set_mode_off xQueueGenericSend 1  # lock
 pb_policy_set_mode_off xQueueSemaphoreTake 1  # lock
 pb_policy_tick xQueueGenericSend 1  # lock

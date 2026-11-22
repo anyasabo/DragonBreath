@@ -324,8 +324,7 @@ bool pb_httpd_read_body(httpd_req_t *req, char *buf, size_t len)
 }
 
 // The handlers of the routes from pb_httpd_register_route(). ROUTES_MAX must
-// be at least the number of product routes: 27 on upstream main, 28 on the
-// fork (anya adds /metrics). The margin is for new routes.
+// be at least the number of product routes (27). The margin is for new routes.
 #define ROUTES_MAX 48
 typedef struct {
     esp_err_t (*handler)(httpd_req_t *req);

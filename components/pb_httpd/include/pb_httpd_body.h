@@ -2,7 +2,7 @@
 #pragma once
 // Bounded read of a request body. httpd_req_recv() can return a part of the
 // body, because TCP can deliver it in parts. It returns HTTPD_SOCK_ERR_TIMEOUT
-// after recv_wait_timeout (5 s) with no data. The httpd task serves one request
+// after recv_wait_timeout (3 s, see pb_httpd.c) with no data. The httpd task serves one request
 // at a time. Thus a body read must not wait for a stalled or slow client
 // without a limit.
 //
@@ -35,8 +35,8 @@ typedef int64_t (*pb_httpd_now_fn)(void);
 // Bodies are small (API_BODY_MAX, 1536 bytes, or less). Stop after 3 idle
 // timeouts in a row, or after 10 s in total. The read checks the deadline
 // before each receive, and one receive can wait for one recv_wait_timeout
-// (5 s). Thus a client that sends one byte for each timeout holds the httpd
-// task for about 15 s at most.
+// (3 s). Thus a client that sends one byte for each timeout holds the httpd
+// task for about 13 s at most.
 #define PB_HTTPD_BODY_LIMITS ((pb_httpd_body_limits_t){ .idle_timeouts_max = 3, .deadline_us = 10 * 1000000LL })
 
 // Read exactly len bytes into buf. Return true if all bytes arrived. Return

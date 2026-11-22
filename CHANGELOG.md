@@ -13,7 +13,7 @@ below into the GitHub Release notes.
   single httpd task stayed in a retry loop until the client closed the socket.
   Now a body read stops after 3 receive timeouts in a row, or after 10 s in
   total. A client that sends one byte for each timeout holds the task for
-  about 15 s at most.
+  about 13 s at most.
 - **HTTP API: an early answer closes the connection.** If a handler answered
   before it read the body, the HTTP server read and discarded the rest of the
   body. Examples are a 403 and a body that is too large. That read had no time

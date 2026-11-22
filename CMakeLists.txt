@@ -109,21 +109,31 @@ set(DB_EXTRA_WARNING_FLAGS
     -Wconversion -Wsign-conversion -Wdouble-promotion -Wcast-align=strict
     -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op
     -Wformat=2 -Wformat-overflow=2 -Wformat-truncation=2 -Wformat-signedness
-    -Wshadow -Wstack-usage=1024 -Wundef -Wstrict-prototypes -Wmissing-prototypes
+    -Wshadow -Wstack-usage=1024 -Wundef
     -Wimplicit-fallthrough=5 -Wvla -Walloca -Wswitch-enum -Wpointer-arith
-    -Wwrite-strings -Wjump-misses-init)
+    -Wwrite-strings
+    # C only: GCC rejects these for C++ ("valid for C/ObjC but not for C++").
+    $<$<COMPILE_LANGUAGE:C>:-Wstrict-prototypes>
+    $<$<COMPILE_LANGUAGE:C>:-Wmissing-prototypes>
+    $<$<COMPILE_LANGUAGE:C>:-Wjump-misses-init>)
 # Fork-only: these warnings are errors in each build. The analysis build of
 # 2026-11-22 (ESP-IDF v6.1, GCC 15.2) found zero of them in the first-party
 # and dc_* code, so a new one is a new defect.
 set(DB_STRICT_WARNING_FLAGS
     -Wnull-dereference -Wduplicated-cond -Wduplicated-branches -Wlogical-op
     -Wimplicit-fallthrough -Wvla -Walloca -Wpointer-arith -Wwrite-strings
-    -Wjump-misses-init -Wformat-overflow=2 -Wstrict-prototypes)
+    -Wformat-overflow=2
+    # C only, see above. With -Werror, they would stop the build of a C++ file.
+    $<$<COMPILE_LANGUAGE:C>:-Wjump-misses-init>
+    $<$<COMPILE_LANGUAGE:C>:-Wstrict-prototypes>)
 # DB_ANALYZER=ON runs the GCC static analyzer (-fanalyzer) on the same
 # components only. CONFIG_COMPILER_STATIC_ANALYZER runs it on all of ESP-IDF,
 # and ESP-IDF code then stops the build.
+# It turns on DB_EXTRA_WARNINGS, because the analyzer findings must stay
+# warnings (-Wno-error).
 option(DB_ANALYZER "Run -fanalyzer on first-party components (warnings only)" OFF)
 if(DB_ANALYZER)
+    set(DB_EXTRA_WARNINGS ON)
     list(APPEND DB_EXTRA_WARNING_FLAGS -fanalyzer)
 endif()
 file(GLOB DB_OWN_COMPONENT_DIRS
@@ -145,8 +155,12 @@ foreach(db_comp ${DB_BUILD_COMPONENTS})
     endif()
 endforeach()
 set(DB_WERROR_APPLIED 0)
+set(DB_WERROR_APPLIED_DC 0)
 foreach(db_comp ${DB_OWN_COMPONENTS})
     if(TARGET __idf_${db_comp})
+        if(db_comp MATCHES "^dc_")
+            math(EXPR DB_WERROR_APPLIED_DC "${DB_WERROR_APPLIED_DC} + 1")
+        endif()
         target_compile_options(__idf_${db_comp} PRIVATE -Wall -Wextra -Werror ${DB_STRICT_WARNING_FLAGS})
         if(DB_EXTRA_WARNINGS)
             target_compile_options(__idf_${db_comp} PRIVATE ${DB_EXTRA_WARNING_FLAGS} -Wno-error)
@@ -158,7 +172,12 @@ if(DB_WERROR_APPLIED EQUAL 0)
     message(FATAL_ERROR "E1: -Werror gate matched ZERO first-party components — "
                         "the ESP-IDF component-target naming may have changed")
 endif()
-message(STATUS "E1: -Wall -Wextra -Werror applied to ${DB_WERROR_APPLIED} first-party components")
+if(DB_WERROR_APPLIED_DC EQUAL 0)
+    message(FATAL_ERROR "E1: -Werror gate matched ZERO dragon-core (dc_*) components — "
+                        "BUILD_COMPONENTS or the dc_* component names may have changed")
+endif()
+message(STATUS "E1: -Wall -Wextra -Werror applied to ${DB_WERROR_APPLIED} first-party components "
+               "(${DB_WERROR_APPLIED_DC} of them dc_*)")
 if(DB_EXTRA_WARNINGS)
     message(STATUS "DB_EXTRA_WARNINGS: ${DB_EXTRA_WARNING_FLAGS} (not errors)")
 endif()

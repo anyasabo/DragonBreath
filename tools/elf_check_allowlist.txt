@@ -3,7 +3,8 @@
 # task can reach and that is not here, and on more call sites than COUNT.
 # CALLEE "(indirect)" is a call through a function pointer: the check cannot
 # see its target, so each new indirect site needs a review.
-# Generated from the release ELF (ESP-IDF v5.3.6) with --write-allowlist.
+# Generated from the release ELF (ESP-IDF v5.3.6) with --write-allowlist, then
+# updated by hand for ESP-IDF v6.1.1 (see the end of the file).
 # ESP-IDF v6 log macros call esp_log, not esp_log_write: the call sites are the same.
 #
 # Before you add a line or raise a count, read the call. Accept it only if one

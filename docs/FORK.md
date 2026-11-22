@@ -33,7 +33,7 @@ These changes affect the use of a release build of this fork. Read them before y
 4. **A hazard trip during a panic-off or an inhibit survives a power cycle.** Upstream keeps such a trip in RAM only.
 5. **Stricter input checks.** For a request to `/settings` with a bad field, the firmware applies no field. A zone target above 255 is clamped, not wrapped. `/api/v2/presets` and `/api/v2/bambu/scan` need the auth header.
 6. **A slow client cannot hold the web server.** A body read stops after 3 receive timeouts in a row or after approximately 10 s. The worst case is 13 s. Socket timeouts are 3 s.
-7. **ESP-IDF v6.1.1.** Upstream builds with ESP-IDF v5.3. The fork image uses ESP-IDF v6.1.1, with a new C library (picolibc), GCC 15, Mbed TLS 4 and new Wi-Fi binaries. The image also has a stack protector and light heap poisoning: a stack overrun or a damaged heap block stops the firmware with a panic.
+7. **ESP-IDF v6.1.1.** Upstream builds with ESP-IDF v5.3. The fork image uses ESP-IDF v6.1.1, with a new C library (picolibc), GCC 15, Mbed TLS 4 and new Wi-Fi binaries. The image also has a stack protector and light heap poisoning. If a function with a local array returns after an overrun of that array, the stack protector stops the firmware with a panic. If `free()` finds a damaged block border, heap poisoning stops it.
 8. **New endpoints and settings:** `GET /metrics` (Prometheus), syslog over UDP and SNTP time (Setup, "Syslog and time"). All are off or read-only by default.
 
 The [API documentation](api-v2.md) and [SAFETY.md](SAFETY.md) on this branch include these changes.

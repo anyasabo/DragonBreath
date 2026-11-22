@@ -3,7 +3,8 @@
 # Usage: tests/run_fuzz.sh [SECONDS]   (default 30 s for each harness)
 # The compiler must be clang with libFuzzer. Set FUZZ_CC to select one.
 # New inputs go to a work directory. The seed corpus in the repo stays the same.
-# tests/vendor/cjson is cJSON v1.7.19, the copy in ESP-IDF v5.3.6 components/json.
+# tests/vendor/cjson is cJSON v1.7.19 (master 6d9f244), byte-identical to the registry
+# component espressif/cjson 1.7.19~2 that the firmware links.
 #
 # Merge order: the harnesses find real bugs in upstream main. The fixes are on
 # fix/httpd-body-read (stalled and slow clients, the purge of an unread body)

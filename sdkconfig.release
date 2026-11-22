@@ -13,3 +13,10 @@ CONFIG_DB_REQUIRE_CONTROL_TOKEN=y
 # CONFIG_DB_AUTH_LOCKOUT is not set
 # The setup AP starts only if the Wi-Fi station cannot join.
 CONFIG_DB_DEFAULT_AP_MODE_FALLBACK=y
+
+# Fork-only run-time checks (2026-11-22). The control tick takes at most
+# 1.3 ms (dragonbreath_control_tick_duration_max_seconds), so the cost is small.
+# A stack buffer overrun in a function stops with a panic, not silent damage.
+CONFIG_COMPILER_STACK_CHECK_MODE_STRONG=y
+# A free() of a damaged heap block stops with a panic.
+CONFIG_HEAP_POISONING_LIGHT=y

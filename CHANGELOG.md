@@ -7,6 +7,14 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Changed
+- **`tools/flash.py` and `tools/hil.py` declare their dependencies (PEP 723).**
+  `uv run tools/flash.py` installs esptool 5 for the run, with no `pip` step.
+  `flash.py` uses the esptool 5 command names (`read-flash`, `write-flash`, …)
+  and refuses esptool 4 with a message that tells you how to get esptool 5.
+  The docs and the Windows recovery guide use `uv run`. A CI test checks that
+  each script in `tools/` declares the packages that it imports.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

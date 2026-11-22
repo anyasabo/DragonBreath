@@ -11,29 +11,22 @@ only to:
 
 You do **not** need to clone the repo — `flash.py` is a single self-contained file.
 
-## 1. Install Python + esptool
+## 1. Install uv
 
-Install Python 3.13 (this also installs the `py` launcher):
-
-```
-winget install Python.Python.3.13
-```
-
-**Close the terminal and open a new one** (so PATH updates), then install esptool
-**with the `py` launcher**:
+`flash.py` declares what it needs (Python 3.10+ and esptool 5) at the top of the
+file ([PEP 723](https://peps.python.org/pep-0723/) inline script metadata).
+[uv](https://docs.astral.sh/uv/) reads that block. It downloads a Python and
+esptool for the script, so you do not install either one yourself:
 
 ```
-py -m pip install esptool
+winget install --id=astral-sh.uv -e
 ```
 
-> ### Use `py`, not `python` — this is the #1 Windows gotcha
-> Other apps (Inkscape, GIMP, …) ship their own `python.exe` that can sit *ahead* of
-> the Python you just installed on your PATH. When that happens, `pip` installs
-> esptool into one Python while `python flash.py` runs a *different* one that can't
-> find it — you get `esptool not found` even though `pip` says it's already
-> installed, in an endless loop. The **`py` launcher** always targets your real
-> registered Python, sidestepping this entirely. Use `py` for **both** the install
-> and the script.
+**Close the terminal and open a new one** (so PATH updates).
+
+uv does not use the `python.exe` that other apps (Inkscape, GIMP, …) put on your
+PATH. Thus the old "esptool not found" loop, where `pip` installed esptool into one
+Python and `python flash.py` ran another, cannot occur.
 
 ## 2. Get flash.py
 
@@ -53,19 +46,19 @@ driver automatically and a **COM port** appears; `flash.py` auto-detects it. If 
 COM port shows up in Device Manager, install the **WCH CH340 driver**, then re-plug.
 You can force a port with `--port COM7`.
 
-## 4. Run it (always `py`)
+## 4. Run it
 
 Take a stock backup **before** your first DragonBreath install — keep the file safe,
 it's your only way back:
 
 ```
-py flash.py --backup-only
+uv run flash.py --backup-only
 ```
 
 Go back to 100% stock from a backup:
 
 ```
-py flash.py --restore path\to\your-stock-backup.bin
+uv run flash.py --restore path\to\your-stock-backup.bin
 ```
 
 You'll see esptool write the 4 MB image and print **`Hash of data verified`** — that
@@ -82,7 +75,7 @@ the config (NVS) region and the device comes back up unconfigured, serving its o
 setup AP again:
 
 ```
-py flash.py --erase-nvs
+uv run flash.py --erase-nvs
 ```
 
 This clears Wi-Fi credentials, the control token, saved policy, and sensor
@@ -92,12 +85,12 @@ panel LEDs flash 3× to confirm, then the board reboots erased).
 
 ## Notes
 
-- **Always `py`, never `python`.** If `py` somehow isn't available, use the full path
-  to your real Python, e.g.:
-  ```
-  & "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" flash.py --restore ...
-  ```
-- `flash.py` needs only Python stdlib + esptool — nothing else from the repo.
+- Without uv, install the same requirement into the Python that runs the script,
+  with the `py` launcher for both steps: `py -m pip install "esptool>=5,<6"`, then
+  `py flash.py ...`. The esptool 4 copy in ESP-IDF 5.x is too old: esptool 5
+  renamed the commands.
+- `flash.py` needs only the Python standard library and esptool. It needs nothing
+  else from the repo.
 - For a full USB *install* (not just backup/restore), download the release's
   `dragonbreath-<ver>-install-bundle.zip` instead — it bundles `flash.py` with all
-  the firmware artifacts; unzip and run `py flash.py --build-dir .`.
+  the firmware artifacts; unzip and run `uv run flash.py --build-dir .`.

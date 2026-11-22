@@ -7,6 +7,25 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+- **HTTP API: a stalled client can no longer block the web server.** A client
+  can send less body than its `Content-Length` and keep the socket open. Then the
+  single httpd task stayed in a retry loop until the client closed the socket.
+  Now a body read stops after 3 receive timeouts in a row, or after 10 s in
+  total. A client that sends one byte for each timeout holds the task for
+  about 15 s at most.
+- **HTTP API: an early answer closes the connection.** If a handler answered
+  before it read the body, the HTTP server read and discarded the rest of the
+  body. Examples are a 403 and a body that is too large. That read had no time
+  limit and no limit on `Content-Length`. Thus a client with no token blocked
+  the server. Now the device closes the connection after such an answer.
+  `GET /api/v2/events` with a body gets HTTP 400.
+- **HTTP API: the full body is read before it is used.** `POST /settings` (body
+  form), `POST /api/v2/factory-reset` (body form) and `POST /api/v2/presets`
+  read the body with one receive call. If TCP delivered the body in parts, the
+  handler used only the first part, for example `max=6` of `max=60`. A
+  `/settings` body longer than 127 bytes now gets HTTP 400, not a silent cut.
+
 ## [1.1.19] - 2026-09-23
 
 ### Added

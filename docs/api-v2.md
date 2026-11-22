@@ -254,6 +254,11 @@ state:
 }
 ```
 
+If the device answers before it reads the whole request body, it closes the
+connection after the answer. Examples are `auth_failed` and a body that is too
+large. A body read stops after 3 receive timeouts in a row with no data, or
+after 10 s in total.
+
 Defined error codes include `invalid_command`, `unsupported_api_version`,
 `auth_failed`, `revision_conflict`, `stale_lease`, `fault_latched`,
 `inhibited`, `heater_busy` (enabling filtration while the heater is heating/cooling —

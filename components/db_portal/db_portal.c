@@ -854,9 +854,8 @@ static esp_err_t presets_post(httpd_req_t *req)
     int len = req->content_len;
     if (len <= 0 || len > 256) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body"); return ESP_FAIL; }
     char buf[257];
-    int r = httpd_req_recv(req, buf, len);
-    if (r <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "recv failed"); return ESP_FAIL; }
-    buf[r] = '\0';
+    if (!pb_httpd_read_body(req, buf, (size_t)len)) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "recv failed"); return ESP_FAIL; }
+    buf[len] = '\0';
     cJSON *body = cJSON_Parse(buf);
     cJSON *arr = body ? cJSON_GetObjectItemCaseSensitive(body, "presets") : NULL;
     if (!cJSON_IsArray(arr) || cJSON_GetArraySize(arr) != QP_COUNT) {
@@ -888,25 +887,25 @@ static esp_err_t register_product_routes(httpd_handle_t server, void *ctx)
     esp_err_t err = pb_httpd_register(server);
     if (err != ESP_OK) return err;
     const httpd_uri_t presets_g = { .uri = "/api/v2/presets", .method = HTTP_GET, .handler = presets_get };
-    err = httpd_register_uri_handler(server, &presets_g);
+    err = pb_httpd_register_route(server, &presets_g);
     if (err != ESP_OK) return err;
     const httpd_uri_t presets_p = { .uri = "/api/v2/presets", .method = HTTP_POST, .handler = presets_post };
-    err = httpd_register_uri_handler(server, &presets_p);
+    err = pb_httpd_register_route(server, &presets_p);
     if (err != ESP_OK) return err;
     const httpd_uri_t bambu_scan = { .uri = "/api/v2/bambu/scan", .method = HTTP_POST, .handler = bambu_scan_post };
-    err = httpd_register_uri_handler(server, &bambu_scan);
+    err = pb_httpd_register_route(server, &bambu_scan);
     if (err != ESP_OK) return err;
     const httpd_uri_t bambu_disc = { .uri = "/api/v2/bambu/discovered", .method = HTTP_GET, .handler = bambu_discovered_get };
-    err = httpd_register_uri_handler(server, &bambu_disc);
+    err = pb_httpd_register_route(server, &bambu_disc);
     if (err != ESP_OK) return err;
     const httpd_uri_t km_config = { .uri = "/km-config", .method = HTTP_GET, .handler = km_config_get };
-    err = httpd_register_uri_handler(server, &km_config);
+    err = pb_httpd_register_route(server, &km_config);
     if (err != ESP_OK) return err;
     const httpd_uri_t diag = { .uri = "/diag", .method = HTTP_GET, .handler = diag_page };
-    err = httpd_register_uri_handler(server, &diag);
+    err = pb_httpd_register_route(server, &diag);
     if (err != ESP_OK) return err;
     const httpd_uri_t favicon = { .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_get };
-    return httpd_register_uri_handler(server, &favicon);
+    return pb_httpd_register_route(server, &favicon);
 }
 
 esp_err_t db_portal_start(void)

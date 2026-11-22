@@ -94,7 +94,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git gcc-16 libstdc++-16-dev libc6-dev
-          case "${{ matrix.cc }}" in clang-*) sh tools/ci/install-llvm.sh "${{ matrix.cc }}" | tail -1 ;; esac
+          case "${{ matrix.cc }}" in clang-*) sh tools/ci/install-llvm.sh "${{ matrix.cc }}" ;; esac
           "${{ matrix.cc }}" --version
 
       - name: Run host tests
@@ -269,9 +269,9 @@ jobs:
           command: ccache --zero-stats && idf.py build
 
       # SBOM, license check and vulnerability scans: tools/sbom/sbom.sh, the same script as
-      # local runs. "create" reads build/project_description.json, which has the container
-      # paths, so it runs in the ESP-IDF container. A license failure fails the build.
-      # A CVE does not: the scans only report, in the job summary.
+      # local runs. "create" is offline and reads build/project_description.json, which has
+      # the container paths, so it runs in the ESP-IDF container. A license failure fails the
+      # build. "scan" sends the NVD requests: it only reports, in the job summary.
       - name: Create SBOM and check licenses
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
@@ -287,6 +287,8 @@ jobs:
         timeout-minutes: 30
         env:
           VULNCHECK_TOKEN: ${{ secrets.VULNCHECK_TOKEN }}
+          # Optional: an NVD API key makes esp-idf-sbom check faster.
+          NVDAPIKEY: ${{ secrets.NVDAPIKEY }}
         run: |
           sudo sh tools/ci/install-scanners.sh
           sudo chown -R "$(id -u)" build/sbom

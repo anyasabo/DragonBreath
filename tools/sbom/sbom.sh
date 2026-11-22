@@ -1,9 +1,9 @@
 #!/bin/sh
 # SBOM, license check and vulnerability scans of the firmware image. CI and local runs use this script.
 #
-#   tools/sbom/sbom.sh create BUILD_DIR OUT_DIR   SBOMs, license check, notices, esp-idf-sbom check
-#   tools/sbom/sbom.sh scan OUT_DIR               Grype on the CycloneDX SBOM of OUT_DIR, and a check for
-#                                                 new releases of watched components (cJSON)
+#   tools/sbom/sbom.sh create BUILD_DIR OUT_DIR   SBOMs, license check and notices (offline)
+#   tools/sbom/sbom.sh scan OUT_DIR               esp-idf-sbom check (NVD) and Grype on the SBOMs of
+#                                                 OUT_DIR, and a check for new cJSON releases
 #   tools/sbom/sbom.sh nvdpp OUT_DIR              VulnCheck NVD++: CVEs that NVD has not analysed yet.
 #                                                 Needs VULNCHECK_TOKEN (free community account).
 #
@@ -11,8 +11,8 @@
 # In CI that is the ESP-IDF container. "scan" can run anywhere and needs grype on PATH
 # (tools/ci/install-scanners.sh, or the devspace).
 #
-# Exit status: 1 if the license check fails or a tool fails. A vulnerability finding does not fail
-# the script: it is in OUT_DIR/summary.md. Decide each finding in tools/sbom/vex.json (OpenVEX).
+# Exit status: create exits 1 if the license check fails. A vulnerability finding does not fail
+# scan or nvdpp: it is in OUT_DIR/summary.md. Decide each finding in tools/sbom/vex.json (OpenVEX).
 set -eu
 
 ESP_IDF_SBOM_VERSION=1.5.0
@@ -60,32 +60,50 @@ create)
     else
         echo "sbom.sh: warning: COPYING.picolibc not found; licenses.txt has no picolibc text" >&2
     fi
-    python3 -I "$here/license_check.py" "$out/licenses.json" "$here/license-policy.json" | tee "$out/license-check.txt"
-
-    # Vulnerabilities: report only. check exits 1 if a CVE is open.
-    rc=0
-    esp_idf_sbom check --vex "$here/vex.json" --format markdown -o "$out/esp-idf-sbom-check.md" \
-        "$out/dragonbreath.spdx" || rc=$?
-    esp_idf_sbom check --vex "$here/vex.json" --format json -o "$out/esp-idf-sbom-check.json" \
-        "$out/dragonbreath.spdx" || true
-    open=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["cves_summary"]["total_cves_count"])' \
-        "$out/esp-idf-sbom-check.json")
+    # The license check fails the script. Write its output to a file first: in a pipe to tee,
+    # the exit status would be the one of tee.
+    license_rc=0
+    python3 -I "$here/license_check.py" "$out/licenses.json" "$here/license-policy.json" \
+        > "$out/license-check.txt" || license_rc=$?
+    cat "$out/license-check.txt"
     {
         echo "## SBOM: esp-idf-sbom $ESP_IDF_SBOM_VERSION"
         echo
-        echo "- License check: $(tail -1 "$out/license-check.txt")"
-        echo "- Open CVEs after tools/sbom/vex.json: $open (check exit code $rc)"
+        echo "- $(tail -1 "$out/license-check.txt")"
         echo
-        if [ "$open" != 0 ]; then
-            sed -n '/^|/p' "$out/esp-idf-sbom-check.md" | grep -E '^\| *(Package|-|.*YES|.*MAYBE)' || true
-            echo
-        fi
     } > "$out/summary.md"
+    [ "$license_rc" -eq 0 ] || { echo "sbom.sh: the license check failed" >&2; exit 1; }
     ;;
 scan)
     [ $# -eq 2 ] || { echo "usage: $0 scan OUT_DIR" >&2; exit 2; }
     out=$2
     command -v grype >/dev/null || { echo "sbom.sh: grype not found (tools/ci/install-scanners.sh)" >&2; exit 2; }
+    # esp-idf-sbom check sends live NVD requests (NVDAPIKEY in the environment makes them
+    # faster). It runs here, not in create, so that an NVD outage cannot fail a build or a
+    # release. It gets its own venv, because the venv of create can come from a container.
+    venv="$out/.venv-scan"
+    rc=0
+    to=; command -v timeout >/dev/null && to="timeout 900"
+    $to "$0" _check "$out" || rc=$?
+    python3 -I - "$out/esp-idf-sbom-check.json" "$rc" >> "$out/summary.md" <<'EOF'
+import json, sys
+rc = sys.argv[2]
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    print(f"- esp-idf-sbom check did not finish (exit code {rc}). See the job log.")
+    print()
+    sys.exit(0)
+recs = [r for r in d["records"] if r.get("vulnerable") in ("YES", "MAYBE")]
+print(f"- esp-idf-sbom check: {len(recs)} open CVEs after tools/sbom/vex.json.")
+if recs:
+    print()
+    print("| status | package | version | CVE | severity |")
+    print("|---|---|---|---|---|")
+    for r in recs:
+        print(f"| {r['vulnerable']} | {r['pkg_name']} | {r['pkg_version']} | {r['cve_id']} | {r.get('cvss_base_severity') or '-'} |")
+print()
+EOF
     # Espressif's statements and ours. Grype applies "not_affected" statements as ignore rules.
     grype "sbom:$out/dragonbreath.cdx.json" --vex "$out/esp-idf.vex.json" --vex "$here/vex.json" \
         -o json --file "$out/grype.json" -q
@@ -159,6 +177,13 @@ if rows:
         print(f"| {r['component']} | {r['cve']} | {r['status'] or ''} | {'+'.join(r['sources'])} |")
 print()
 EOF
+    ;;
+_check)
+    # Internal: one esp-idf-sbom check of OUT_DIR. scan runs it under a timeout.
+    out=$2
+    venv="$out/.venv-scan"
+    esp_idf_sbom check --vex "$here/vex.json" --format json -o "$out/esp-idf-sbom-check.json" \
+        "$out/dragonbreath.spdx" || [ -f "$out/esp-idf-sbom-check.json" ]
     ;;
 *)
     echo "usage: $0 create BUILD_DIR OUT_DIR | scan OUT_DIR | nvdpp OUT_DIR" >&2

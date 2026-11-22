@@ -1,6 +1,6 @@
 # About this fork
 
-This repository is a fork of [plastikman/DragonBreath](https://github.com/plastikman/DragonBreath). It adds safety fixes, security fixes, diagnostics, tests and supply-chain checks. Each change is also proposed upstream. When upstream merges a change, the fork drops its copy.
+This repository is a fork of [plastikman/DragonBreath](https://github.com/plastikman/DragonBreath). It adds safety fixes, security fixes, diagnostics, tests and supply-chain checks. Each change that suits upstream is a topic branch for an upstream PR (see the tables below). When upstream merges a change, the fork drops its copy.
 
 **Status:** the fork runs on one Panda Breath V1.1 (slim) with PCB V1.0.1, on a Prusa CORE One L with PrusaLink. It has not completed a heat test on mains power yet. If you want a firmware that other users run, use the upstream release until then.
 
@@ -40,7 +40,7 @@ The [API documentation](api-v2.md) and [SAFETY.md](SAFETY.md) on this branch inc
 
 ## Checks
 
-- **CI** runs on each push to `fork` and each Monday. It runs the host tests with gcc-16 and with clang-23 + ASan/UBSan, and coverage. It also runs cppcheck 2.21, the fuzzers, the release build, a build with ESP-IDF v5.3.6, the static checks on the ELF and the SBOM checks.
+- **CI** runs on each push to `fork` and each Monday. It runs the host tests with gcc-16 and with clang-23 + ASan/UBSan, and coverage. It also runs cppcheck 2.21, the release build, a build with ESP-IDF v5.3.6, the static checks on the ELF and the SBOM checks. The fuzzers run each Monday and on each PR.
 - **Compiler checks:** the product and dragon-core components build with `-Werror` and more warnings as errors. `-DDB_EXTRA_WARNINGS=ON -DDB_ANALYZER=ON` makes an analysis build with more warnings and the GCC static analyzer.
 - **SBOM, CVEs and licenses:** [`tools/sbom/sbom.sh`](../tools/sbom/sbom.sh) makes SPDX and CycloneDX SBOMs of the linked components. It checks them with `esp-idf-sbom check` and Grype. If a token is set, it also checks them with VulnCheck NVD++. [`tools/sbom/vex.json`](../tools/sbom/vex.json) (OpenVEX) gives the reason for each reported CVE that does not apply to the image. A CVE only reports and does not fail CI. The license check fails on a copyleft or an unknown license in the image.
 - **Reproducible images:** the same commit and the same ESP-IDF version give the same image, also in CI. Thus you can check a release against the source.
@@ -55,7 +55,7 @@ The [API documentation](api-v2.md) and [SAFETY.md](SAFETY.md) on this branch inc
 | --- | --- | --- |
 | A hazard trip on top of a RAM-only latch goes to NVS. A failed clear leaves flash latched. | `fix/heater-fault-persist-only` (PR), `fix/heater-fault-persist` (with the host test) | Draft 1 (wave 1) |
 | The setup portal closes its open routes after a late Wi-Fi join. The Wi-Fi scan needs auth in station mode. | dragon-core `fix/portal-setup-auth` | Draft 2 (wave 1) |
-| A stalled client cannot hold the web server. Bodies are read in full. | `fix/httpd-body-read`, `fix/httpd-timeouts` | Draft 7 (wave 2) |
+| A stalled client cannot hold the web server. Bodies are read in full. | `fix/httpd-slow-client` (PR, from `fix/httpd-body-read` and `fix/httpd-timeouts`) | Draft 7 (wave 2) |
 | The same fix for the portal and the OTA upload | dragon-core `fix/portal-body-read` | Draft 8 (wave 2) |
 | `/settings` checks all fields before it applies one. Zone targets are clamped. | `fix/httpd-settings-validate` | Draft 6 (wave 2) |
 | Auth on presets and the Bambu scan. Constant-time token compare. | `fix/portal-auth-presets-scan` (PR) | Draft 9 (wave 2) |

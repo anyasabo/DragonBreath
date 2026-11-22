@@ -2,7 +2,8 @@ name: firmware-build
 
 on:
   push:
-    branches: [main]
+    # Fork-only: also build the published branch fork (anyasabo/DragonBreath).
+    branches: [main, fork]
     paths:
       - 'components/**'
       - 'main/**'

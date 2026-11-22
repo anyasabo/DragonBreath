@@ -19,6 +19,8 @@ concurrency:
 
 jobs:
   deploy:
+    # Fork-only: the page is published by upstream. A fork has no Pages site.
+    if: github.repository == 'plastikman/DragonBreath'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

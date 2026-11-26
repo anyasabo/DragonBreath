@@ -121,10 +121,24 @@ Boot restore is **fail-safe**: if the persisted state cannot be read reliably it
 comes up latched (`persisted fault state unreadable`). A fresh device (no NVS
 namespace yet) is not a fault. Clearing is **persist-first** — the NVS latch is
 cleared *before* the RAM latch, so a failed persist keeps the heater latched and
-the API returns HTTP 500 rather than falsely reporting the fault gone. NVS writes
-each key to flash at once, so the clear writes the latch key last: a failure part
-way leaves flash latched (at worst with a generic cause, which the next control
-tick writes again).
+the API returns HTTP 500 rather than falsely reporting the fault gone. The latch
+is **one NVS key**, `fault_code` (`none` = not latched). NVS makes one key-value
+pair atomic under power loss, so a latch is one write, and so is a clear on a
+device without the legacy key below: a failure or a power loss leaves the old
+state or the new state, never a mix.
+
+Older firmware also wrote a second key, `fault_latch` (0/1). That key can only
+**add** a latch: `fault_latch` = 1 with no valid cause restores as a generic
+`safety trip`, and `fault_latch` = 0 never hides a cause in `fault_code`. If
+`fault_latch` can hold a latch (or its read fails), a clear writes the cause
+into `fault_code`, erases `fault_latch`, and then writes `none`, so each step
+leaves flash latched. If flash holds no latch, the clear only erases
+`fault_latch` and writes `none`. If a
+step fails, the clear reports the error, and flash does not lose a latch that it
+held.
+After a rollback to older firmware (`/api/v2/boot-inactive`), that firmware reads
+only `fault_latch`, so it does not see a latch that newer firmware wrote: clear a
+latched fault before a rollback.
 
 This is deliberately separate from heat resume: the persisted latch is the **only**
 fault state that survives a reboot. The active mode, target, deadline, and lease

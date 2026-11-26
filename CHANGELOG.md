@@ -15,15 +15,20 @@ below into the GitHub Release notes.
   is written to NVS. A hazard cause also replaces a persisted generic
   `safety trip` cause (lease watchdog) once. A panic-off or an inhibit alone
   still clears on reboot.
-- **A deferred fault write sometimes wrote a cleared fault back.** If a fault
-  write failed, a clear and then a panic-off landed before the retry, the retry
-  wrote the cleared cause to NVS again. The retry now writes only a latch that
-  belongs in NVS.
-- **A failed fault clear sometimes left flash unlatched.** NVS writes each key to
-  flash at once. The clear wrote the latch key first, so a failure on the code
-  key left flash unlatched while RAM stayed latched (HTTP 500). The clear now
-  writes the latch key last, so a partial failure leaves flash latched. The
-  next control tick writes the cause again.
+- **A deferred fault write could persist a panic-off instead of the hazard.**
+  The retry of a failed fault write wrote the current fault cause. If a
+  panic-off came before the retry, the retry wrote `panic-off`: the hazard cause
+  was lost, and the panic-off survived a reboot. The retry now writes the
+  hazard cause.
+- **A failed fault clear sometimes left flash unlatched.** The latch was two NVS
+  keys, and NVS makes only one key-value pair atomic. The clear wrote the latch
+  key first, so a failure on the code key left flash unlatched while RAM stayed
+  latched (HTTP 500). The latch is now one key, `fault_code` (`none` = not
+  latched), so a latch is one write. A clear is also one write, except the
+  first clear on a device that still has the old `fault_latch` key. That key
+  can only add a latch, and the clear erases it in steps that each leave flash
+  latched. After a rollback to older firmware, that firmware does not see a
+  latch that this firmware wrote.
 
 ## [1.1.19] - 2026-09-23
 

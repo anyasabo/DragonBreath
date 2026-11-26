@@ -63,8 +63,8 @@ static bool        s_heat_intent;       // control-task only — bang-bang chamb
 #define KEY_COOL_REL_C     "cool_rel_c"      // u32 centi-°C — cooldown-purge release temp
 #define KEY_FB_CUT_C       "fb_cut_c"        // u32 centi-°C — foldback-cut override (0 = auto)
 #define KEY_HEAT_METHOD    "heat_method"     // u8 pb_heater_method_t (0=bangbang default, 1=pid)
-#define KEY_FAULT_LATCH    "fault_latch"     // u8 0/1 — persisted safety-fault latch
-#define KEY_FAULT_CODE     "fault_code"      // u8 pb_fault_reason_t
+#define KEY_FAULT_CODE     "fault_code"      // u8 pb_fault_reason_t — THE persisted latch (NONE = not latched)
+#define KEY_FAULT_LATCH    "fault_latch"     // u8 0/1 — legacy (older firmware); can only add a latch, a clear erases it
 
 // Canonical, stable strings for each fault code (index == code). Kept identical to
 // the historical trip strings so the API contract doesn't change for existing
@@ -87,7 +87,7 @@ const char *pb_heater_fault_str(pb_fault_reason_t code)
     if ((unsigned)code >= PB_FAULT__COUNT || !k_fault_str[code]) return "latched fault";
     return k_fault_str[code];
 }
-// pb_heater_fault_decide() is a pure header inline (see pb_heater.h) so the
+// pb_heater_fault_restore() is a pure header inline (see pb_heater.h) so the
 // boot-time fail-safe logic can be host-tested without an NVS backend.
 
 static float centi_to_c(uint32_t v) { return (float)v / 100.0f; }
@@ -414,29 +414,77 @@ void pb_heater_notify_link_alive(void)
     taskEXIT_CRITICAL(&s_mux);
 }
 
-// Persist (or clear) the safety-fault latch to NVS. NVS ops MUST run outside
-// s_mux (they can block / need interrupts). On latch this is best-effort — RAM is
-// authoritative for the session; on CLEAR the return matters so a failed persist
-// can be surfaced (HTTP 500) rather than falsely reporting the fault gone.
-static esp_err_t persist_fault(bool latched, pb_fault_reason_t code)
+// Persist the safety-fault latch to NVS: a cause latches it (best-effort — RAM
+// is authoritative for the session). NVS ops MUST run outside s_mux (they can
+// block / need interrupts).
+//
+// The latch is ONE key, so one write changes it. NVS makes one key-value pair
+// atomic under power loss, not two (ESP-IDF docs/en/api-reference/storage/
+// nvs_flash.rst, "Security, Tampering, and Robustness"): a power loss leaves the
+// old value or the new value.
+// Write one fault key. ESP_ERR_NVS_REMOVE_FAILED means that the new value is
+// in flash and only the erase of the old entry (a flash write error) failed:
+// https://github.com/espressif/esp-idf/blob/v5.3.6/components/nvs_flash/include/nvs.h#L37
+// https://github.com/espressif/esp-idf/blob/v5.3.6/components/nvs_flash/src/nvs_storage.cpp#L595-L599
+// nvs_flash_init removes the old duplicate only if it is on the same page as
+// the new entry, or if the new entry is the last item of the last page:
+// https://github.com/espressif/esp-idf/blob/v5.3.6/components/nvs_flash/src/nvs_page.cpp#L726-L727
+// https://github.com/espressif/esp-idf/blob/v5.3.6/components/nvs_flash/src/nvs_pagemanager.cpp#L57-L89
+// Otherwise the lookup starts at the oldest page, and the old value can win:
+// https://github.com/espressif/esp-idf/blob/v5.3.6/components/nvs_flash/src/nvs_storage.cpp#L256-L270
+// The firmware cannot fix that case: a retry finds the new value and writes
+// nothing. Thus count the write as done. If this returned the error, a clear
+// that reached flash would report a failure, and RAM would stay latched.
+static esp_err_t set_fault_key(nvs_handle_t h, const char *key, uint8_t v)
+{
+    esp_err_t err = nvs_set_u8(h, key, v);
+    return err == ESP_ERR_NVS_REMOVE_FAILED ? ESP_OK : err;
+}
+
+static esp_err_t persist_fault(pb_fault_reason_t code)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) { ESP_LOGE(TAG, "fault persist: nvs_open %s", esp_err_to_name(err)); return err; }
-    // nvs_set_* writes through to flash, so order the keys such that a failure
-    // part way leaves flash LATCHED: on latch write the latch key first, on
-    // clear write it last. (A cleared code with a set latch restores as a generic
-    // latched fault — fail-safe.)
-    if (latched) {
-        err = nvs_set_u8(h, KEY_FAULT_LATCH, 1);
-        if (err == ESP_OK) err = nvs_set_u8(h, KEY_FAULT_CODE, (uint8_t)code);
-    } else {
-        err = nvs_set_u8(h, KEY_FAULT_CODE, (uint8_t)code);
-        if (err == ESP_OK) err = nvs_set_u8(h, KEY_FAULT_LATCH, 0);
-    }
+    err = set_fault_key(h, KEY_FAULT_CODE, (uint8_t)code);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     if (err != ESP_OK) ESP_LOGE(TAG, "fault persist: %s", esp_err_to_name(err));
+    return err;
+}
+
+// Clear the latch in NVS. The return matters: a failed clear is surfaced (HTTP
+// 500) rather than falsely reporting the fault gone, and flash must stay latched.
+// Without the legacy key (firmware before the one-key format), this is one
+// write. If flash holds no latch (legacy 0 and no held cause), erase the legacy
+// key, then write NONE. Otherwise (or if the legacy read fails), every step must
+// leave flash latched: write a cause into fault_code (`held`, or a generic one),
+// erase fault_latch, then write NONE.
+static esp_err_t persist_clear(pb_fault_reason_t held)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) { ESP_LOGE(TAG, "fault clear: nvs_open %s", esp_err_to_name(err)); return err; }
+    uint8_t legacy;
+    err = nvs_get_u8(h, KEY_FAULT_LATCH, &legacy);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        err = ESP_OK;
+    } else if (err == ESP_OK && legacy == 0 && held == PB_FAULT_NONE) {
+        // Flash holds no latch (a RAM-only latch is cleared). Each step below
+        // leaves flash unlatched, so do not write a cause.
+        err = nvs_erase_key(h, KEY_FAULT_LATCH);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    } else {
+        // The legacy key can hold a latch, or the read failed: take the safe path.
+        err = set_fault_key(h, KEY_FAULT_CODE,
+                            (uint8_t)(held != PB_FAULT_NONE ? held : PB_FAULT_EMERGENCY));
+        if (err == ESP_OK) err = nvs_erase_key(h, KEY_FAULT_LATCH);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) err = set_fault_key(h, KEY_FAULT_CODE, PB_FAULT_NONE);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) ESP_LOGE(TAG, "fault clear: %s", esp_err_to_name(err));
     return err;
 }
 
@@ -481,7 +529,7 @@ static void do_latch(pb_fault_reason_t code, const char *reason,
     taskEXIT_CRITICAL(&s_mux);
     if (write) {
         if (s_persist_lock) xSemaphoreTake(s_persist_lock, portMAX_DELAY);
-        esp_err_t pe = persist_fault(true, code);
+        esp_err_t pe = persist_fault(code);
         if (pe != ESP_OK) {
             // The write failed (NVS busy, or a fault before nvs_init on early boot).
             // Mark it pending so pb_heater_tick() keeps retrying until it commits —
@@ -542,10 +590,13 @@ esp_err_t pb_heater_clear_fault(void)
     // latched (fail-safe) and report it — the heater stays off rather than falsely
     // appearing cleared but returning on the next reboot.
     if (s_persist_lock) xSemaphoreTake(s_persist_lock, portMAX_DELAY);
-    esp_err_t err = persist_fault(false, PB_FAULT_NONE);
+    taskENTER_CRITICAL(&s_mux);
+    pb_fault_reason_t held = s_persist_code;
+    taskEXIT_CRITICAL(&s_mux);
+    esp_err_t err = persist_clear(held);
     if (err != ESP_OK) {
-        // A failure part way can leave the code key cleared. Let the tick retry
-        // write the latch and its cause again.
+        // A step before the error can have changed flash (persist_clear writes
+        // a cause first). Let the tick retry write the held cause again.
         taskENTER_CRITICAL(&s_mux);
         if (s_persist_code != PB_FAULT_NONE) s_persist_pending = true;
         taskEXIT_CRITICAL(&s_mux);
@@ -595,24 +646,26 @@ pb_fault_reason_t pb_heater_fault_code(void)
     return c;
 }
 
+static pb_nvs_read_t nvs_read_result(esp_err_t err)
+{
+    if (err == ESP_OK) return PB_NVS_OK;
+    return err == ESP_ERR_NVS_NOT_FOUND ? PB_NVS_NOT_FOUND : PB_NVS_ERROR;
+}
+
 void pb_heater_load_fault(void)
 {
     nvs_handle_t h;
     esp_err_t oe = nvs_open(NVS_NS, NVS_READONLY, &h);
-    bool ns_not_found = (oe == ESP_ERR_NVS_NOT_FOUND);
-    bool open_ok      = (oe == ESP_OK);
     uint8_t latch_val = 0, code_val = PB_FAULT_NONE;
-    bool latch_read_ok = false, latch_not_found = false;
-    if (open_ok) {
-        esp_err_t le = nvs_get_u8(h, KEY_FAULT_LATCH, &latch_val);
-        latch_not_found = (le == ESP_ERR_NVS_NOT_FOUND);
-        latch_read_ok   = (le == ESP_OK);
-        nvs_get_u8(h, KEY_FAULT_CODE, &code_val);   // best-effort; decide() range-checks
+    pb_nvs_read_t latch_rd = PB_NVS_NOT_FOUND, code_rd = PB_NVS_NOT_FOUND;
+    if (oe == ESP_OK) {
+        latch_rd = nvs_read_result(nvs_get_u8(h, KEY_FAULT_LATCH, &latch_val));
+        code_rd  = nvs_read_result(nvs_get_u8(h, KEY_FAULT_CODE, &code_val));
         nvs_close(h);
     }
     pb_fault_reason_t code;
-    bool latched = pb_heater_fault_decide(open_ok, ns_not_found, latch_read_ok,
-                                          latch_not_found, latch_val, code_val, &code);
+    bool latched = pb_heater_fault_restore(nvs_read_result(oe), latch_rd, latch_val,
+                                           code_rd, code_val, &code);
     if (latched) {
         // No NVS write (already in NVS, or unreadable); drive_ssr=false (init()
         // already forced the SSR off and the control task is not running yet).
@@ -654,7 +707,7 @@ void pb_heater_tick(void)          // control-task context; sole writer of s_on
             bool still = code != PB_FAULT_NONE;         // a clear sets NONE: nothing to write
             s_persist_retry_us = now;
             taskEXIT_CRITICAL(&s_mux);
-            esp_err_t pr = still ? persist_fault(true, code) : ESP_OK;  // cleared -> nothing to write
+            esp_err_t pr = still ? persist_fault(code) : ESP_OK;  // cleared -> nothing to write
             if (pr == ESP_OK) {
                 taskENTER_CRITICAL(&s_mux);
                 s_persist_pending = false;

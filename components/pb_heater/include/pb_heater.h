@@ -63,34 +63,46 @@ typedef enum {
     PB_HEATER_METHOD_PID      = 1,   // v1.1.16 — opt-in
 } pb_heater_method_t;
 
+// The result of one NVS read for pb_heater_fault_restore().
+typedef enum {
+    PB_NVS_OK,
+    PB_NVS_NOT_FOUND,   // the namespace or the key was never written
+    PB_NVS_ERROR,       // any other error
+} pb_nvs_read_t;
+
 // Pure fail-safe decision for the boot-time fault restore (pb_heater_load_fault),
-// inline so it can be host-tested without an NVS backend. Given the outcome of
-// reading the persisted latch/code, decides whether to come up latched and with
-// which code:
-//   - namespace/key never written (fresh device)  -> NOT latched.
-//   - a genuine read error (open or latch read)    -> FAIL SAFE: latch, NVS_UNREADABLE.
-//   - a readable latch flag == 1                   -> latched with the stored code;
-//       an out-of-range/NONE stored code is corrupt -> latch anyway (PB_FAULT_EMERGENCY).
-// open_ok / latch_read_ok are false ONLY on a real error (the not-found cases are
-// signalled separately via ns_not_found / latch_not_found).
-static inline bool pb_heater_fault_decide(bool open_ok, bool ns_not_found,
-                                          bool latch_read_ok, bool latch_not_found,
-                                          uint8_t latch_val, uint8_t code_val,
-                                          pb_fault_reason_t *out_code)
+// inline so it can be host-tested without an NVS backend. Returns whether to come
+// up latched, and the cause in *out_code (PB_FAULT_NONE if not latched).
+//
+// The latch is ONE NVS key, fault_code: PB_FAULT_NONE is "not latched". NVS makes
+// one key-value pair atomic under power loss, not two, so one write latches it.
+// Older firmware also wrote fault_latch (0/1). That key can only ADD a
+// latch: fault_latch != 0 with no valid cause gives PB_FAULT_EMERGENCY, and
+// fault_latch == 0 never hides a cause in fault_code. pb_heater_clear_fault()
+// erases fault_latch. Rules:
+//   - namespace or keys never written (fresh device) -> NOT latched.
+//   - a genuine read error (open or either key)       -> FAIL SAFE: latch, NVS_UNREADABLE.
+//   - fault_code holds a cause                        -> latched with it; an
+//       out-of-range code is corrupt -> latch anyway (PB_FAULT_EMERGENCY).
+//   - else fault_latch != 0                           -> latched, PB_FAULT_EMERGENCY.
+static inline bool pb_heater_fault_restore(pb_nvs_read_t open,
+                                           pb_nvs_read_t latch_rd, uint8_t latch_val,
+                                           pb_nvs_read_t code_rd, uint8_t code_val,
+                                           pb_fault_reason_t *out_code)
 {
     pb_fault_reason_t code = PB_FAULT_NONE;
-    bool latched = false;
-    if (ns_not_found || latch_not_found) {
-        latched = false;                                   // fresh device / never latched
-    } else if (!open_ok || !latch_read_ok) {
-        latched = true; code = PB_FAULT_NVS_UNREADABLE;    // can't read -> fail safe
-    } else if (latch_val) {
-        latched = true;
-        code = (code_val < PB_FAULT__COUNT && code_val != PB_FAULT_NONE)
-               ? (pb_fault_reason_t)code_val : PB_FAULT_EMERGENCY;   // corrupt code -> generic
+    if (open == PB_NVS_NOT_FOUND) {
+        code = PB_FAULT_NONE;                                      // fresh device
+    } else if (open == PB_NVS_ERROR || latch_rd == PB_NVS_ERROR || code_rd == PB_NVS_ERROR) {
+        code = PB_FAULT_NVS_UNREADABLE;                            // can't read -> fail safe
+    } else if (code_rd == PB_NVS_OK && code_val != PB_FAULT_NONE) {
+        code = code_val < PB_FAULT__COUNT ? (pb_fault_reason_t)code_val
+                                          : PB_FAULT_EMERGENCY;   // corrupt code -> generic
+    } else if (latch_rd == PB_NVS_OK && latch_val != 0) {
+        code = PB_FAULT_EMERGENCY;                                 // legacy latch, no cause
     }
     if (out_code) *out_code = code;
-    return latched;
+    return code != PB_FAULT_NONE;
 }
 
 // --- Safety limits ----------------------------------------------------------

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Host test for the SAFETY-CRITICAL boot-time fault-restore decision
-// (pb_heater_fault_decide) — a pure header inline, verified without an NVS
+// (pb_heater_fault_restore) — a pure header inline, verified without an NVS
 // backend. This logic is what guarantees a device that latched a safety fault
 // comes back up LOCKED after a power cycle, and fails SAFE (latched) whenever the
 // persisted fault state cannot be read reliably.
@@ -23,46 +23,40 @@
 int main(void)
 {
     pb_fault_reason_t code;
+    // The latch is fault_code alone (PB_FAULT_NONE = not latched). A legacy
+    // fault_latch key (older firmware) can only ADD a latch.
+#define RESTORE(open, lrd, lval, crd, cval) \
+    pb_heater_fault_restore(PB_NVS_##open, PB_NVS_##lrd, (lval), PB_NVS_##crd, (cval), &code)
 
-    // Fresh device: the NVS namespace was never written -> NOT latched.
-    CHECK(pb_heater_fault_decide(false, /*ns_not_found=*/true,
-                                 false, false, 0, 0, &code) == false);
-    CHECK(code == PB_FAULT_NONE);
+    // Fresh device: no namespace, or no fault keys -> NOT latched.
+    CHECK(!RESTORE(NOT_FOUND, NOT_FOUND, 0, NOT_FOUND, 0) && code == PB_FAULT_NONE);
+    CHECK(!RESTORE(OK, NOT_FOUND, 0, NOT_FOUND, 0) && code == PB_FAULT_NONE);
+    // One key: NONE -> not latched; a valid cause -> latched with it.
+    CHECK(!RESTORE(OK, NOT_FOUND, 0, OK, PB_FAULT_NONE) && code == PB_FAULT_NONE);
+    CHECK(RESTORE(OK, NOT_FOUND, 0, OK, PB_FAULT_PTC_OVERTEMP) && code == PB_FAULT_PTC_OVERTEMP);
+    // Out of range (corrupt) -> latch anyway, with a generic cause.
+    CHECK(RESTORE(OK, NOT_FOUND, 0, OK, 250) && code == PB_FAULT_EMERGENCY);
 
-    // Namespace exists but the latch key was never written -> NOT latched.
-    CHECK(pb_heater_fault_decide(true, false,
-                                 false, /*latch_not_found=*/true, 0, 0, &code) == false);
-    CHECK(code == PB_FAULT_NONE);
+    // Legacy keys. Latched with a valid code -> that code.
+    CHECK(RESTORE(OK, OK, 1, OK, PB_FAULT_CHAMBER_OVERTEMP) && code == PB_FAULT_CHAMBER_OVERTEMP);
+    // Legacy latch set, code NONE, missing or corrupt -> generic, still latched.
+    CHECK(RESTORE(OK, OK, 1, OK, PB_FAULT_NONE) && code == PB_FAULT_EMERGENCY);
+    CHECK(RESTORE(OK, OK, 7, NOT_FOUND, 0) && code == PB_FAULT_EMERGENCY);
+    CHECK(RESTORE(OK, OK, 1, OK, 250) && code == PB_FAULT_EMERGENCY);
+    // Legacy latch 0 and code NONE -> not latched.
+    CHECK(!RESTORE(OK, OK, 0, OK, PB_FAULT_NONE) && code == PB_FAULT_NONE);
+    // Legacy latch 0 but a cause in fault_code -> LATCHED. This is a legacy
+    // clear that stopped part way, or a latch that this firmware wrote while
+    // the legacy key stayed in flash. The legacy key must never hide it.
+    CHECK(RESTORE(OK, OK, 0, OK, PB_FAULT_PTC_OVERTEMP) && code == PB_FAULT_PTC_OVERTEMP);
 
-    // Latched with a valid stored code -> come up latched with that exact code.
-    CHECK(pb_heater_fault_decide(true, false, /*latch_read_ok=*/true, false,
-                                 1, PB_FAULT_CHAMBER_OVERTEMP, &code) == true);
-    CHECK(code == PB_FAULT_CHAMBER_OVERTEMP);
-
-    // Latch flag == 0 -> not latched even if a stale code sits in NVS.
-    CHECK(pb_heater_fault_decide(true, false, true, false,
-                                 0, PB_FAULT_PTC_OVERTEMP, &code) == false);
-    CHECK(code == PB_FAULT_NONE);
-
-    // Latched but the stored code is out of range (corrupt) -> latch anyway,
-    // mapped to a generic cause rather than trusting the garbage byte.
-    CHECK(pb_heater_fault_decide(true, false, true, false, 1, 250, &code) == true);
-    CHECK(code == PB_FAULT_EMERGENCY);
-
-    // Latched with a NONE(0) code is inconsistent -> also generic, still latched.
-    CHECK(pb_heater_fault_decide(true, false, true, false,
-                                 1, PB_FAULT_NONE, &code) == true);
-    CHECK(code == PB_FAULT_EMERGENCY);
-
-    // FAIL-SAFE: a genuine nvs_open error (not "namespace not found") -> latch.
-    CHECK(pb_heater_fault_decide(/*open_ok=*/false, false, false, false,
-                                 0, 0, &code) == true);
-    CHECK(code == PB_FAULT_NVS_UNREADABLE);
-
-    // FAIL-SAFE: opened OK but the latch key read genuinely failed -> latch.
-    CHECK(pb_heater_fault_decide(true, false, /*latch_read_ok=*/false,
-                                 /*latch_not_found=*/false, 0, 0, &code) == true);
-    CHECK(code == PB_FAULT_NVS_UNREADABLE);
+    // FAIL-SAFE: a genuine open error or a read error of either key -> latch.
+    CHECK(RESTORE(ERROR, NOT_FOUND, 0, NOT_FOUND, 0) && code == PB_FAULT_NVS_UNREADABLE);
+    CHECK(RESTORE(OK, NOT_FOUND, 0, ERROR, 0) && code == PB_FAULT_NVS_UNREADABLE);
+    CHECK(RESTORE(OK, ERROR, 0, OK, PB_FAULT_NONE) && code == PB_FAULT_NVS_UNREADABLE);
+    CHECK(RESTORE(OK, OK, 1, ERROR, 0) && code == PB_FAULT_NVS_UNREADABLE);
+    CHECK(RESTORE(OK, ERROR, 0, ERROR, 0) && code == PB_FAULT_NVS_UNREADABLE);
+#undef RESTORE
 
     puts("pb_heater fault-restore checks: PASS");
 
